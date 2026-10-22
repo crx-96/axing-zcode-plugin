@@ -4,13 +4,14 @@ import http from "node:http";
 import { once } from "node:events";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, copyFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, renderConfigYaml } from "../bridge/config.mjs";
 import { requestLocal } from "../bridge/local-http.mjs";
+import { copyTestCore, nativeCoreSkip } from "./helpers/native-core.mjs";
 import {
   probeBridge, sameProcess, processIdentity, withLifecycleLock, ensureDataDir,
   ensureRunning, getStatus, stopBridge, startWatchdog,
@@ -19,7 +20,7 @@ import {
 const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const processModuleUrl = new URL("../bridge/bridge-process.mjs", import.meta.url).href;
 const execFileAsync = promisify(execFile);
-const windowsOnly = process.platform !== "win32" ? "仅在 Windows 验证进程身份与随附 exe" : false;
+const windowsOnly = process.platform !== "win32" ? "仅在 Windows 验证进程身份与隔离 exe" : nativeCoreSkip;
 const powerShell = join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 const signature = { message: "CLI Proxy API Server", endpoints: ["GET /v1/models"] };
 
@@ -136,7 +137,7 @@ async function realBridgeFixture(t) {
     for (const stop of beforeCleanup) await stop();
     await cleanupBridgeFixture(config, directory);
   });
-  await copyFile(join(pluginRoot, "bridge", "bin", "zcode-plugin-subscription-proxy.exe"), binPath);
+  await copyTestCore(binPath);
   Object.assign(config, await loadConfig({ pluginRoot, env }));
   assert.ok(config.dataDir.startsWith(directory));
   assert.ok(config.authDir.startsWith(directory));
@@ -155,11 +156,12 @@ async function stopOwnNodeChild(child) {
   await exited;
 }
 
-async function mcpClient(t, env, beforeCleanup) {
+async function mcpClient(t, env, beforeCleanup, { initialize = true } = {}) {
   const child = spawn(process.execPath, [join(pluginRoot, "scripts", "mcp-server.mjs")], {
     env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
   });
   const waiters = new Map();
+  const responses = [];
   let buffer = "";
   let stderr = "";
   let nextId = 1;
@@ -178,6 +180,7 @@ async function mcpClient(t, env, beforeCleanup) {
       try {
         const message = JSON.parse(line);
         assert.equal(message.jsonrpc, "2.0", "MCP stdout 不得混入桥日志");
+        responses.push(message);
         if (waiters.has(message.id)) waiters.get(message.id)(message);
       } catch (error) { protocolError = error; }
     }
@@ -211,11 +214,13 @@ async function mcpClient(t, env, beforeCleanup) {
     assert.equal(response.error, undefined);
     return response.result;
   }
-  const initialized = await request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "isolated-tests", version: "1" } });
-  assert.ok(initialized.serverInfo);
-  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+  if (initialize) {
+    const initialized = await request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "isolated-tests", version: "1" } });
+    assert.ok(initialized.serverInfo);
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+  }
   return {
-    child, close, endInput,
+    child, close, endInput, request, responses,
     async call(name) {
       const result = await request("tools/call", { name, arguments: {} });
       assert.notEqual(result.isError, true, `MCP ${name} 不应报错`);
@@ -418,10 +423,14 @@ test("并发 ensureRunning 只启动一个实例，两个真实 MCP 子进程复
   assert.equal((await readPid(config)).pid, before.pid);
 });
 
-test("单个 MCP 正常 EOF 后关闭自己的代理和 supervisor", { skip: windowsOnly, timeout: 60000 }, async (t) => {
+test("单个 MCP 握手后后台自动就绪，无需工具或账号，正常 EOF 回收代理和 supervisor", { skip: windowsOnly, timeout: 60000 }, async (t) => {
   const { config, env, beforeCleanup } = await realBridgeFixture(t);
   const client = await mcpClient(t, env, beforeCleanup);
-  assert.equal((await client.call("bridge_start")).ready, true);
+  await waitUntil(async () => (await getStatus(config)).ready, 30000);
+  const status = await getStatus(config);
+  assert.equal(status.ready, true, "后台必须自动启动，不能靠 bridge_start 补启动");
+  assert.equal(status.authCount, 0, "没有授权账号也允许握手成功");
+  assert.equal((await requestLocal(config, "/management.html", { maxBytes: 5 * 1024 * 1024 })).status, 200);
   const before = await readPid(config);
   assert.equal((await isolatedSupervisorPids(config)).length, 1);
   await client.endInput();
@@ -438,15 +447,18 @@ test("强杀独立 MCP 后 supervisor 通过 owner 句柄关闭代理，不操�
   await assertOwnedProcessesExited(config, before.pid);
 });
 
-test("MCP 启动尚未发布 PID 时收到 EOF 不残留代理或 supervisor", { skip: windowsOnly, timeout: 60000 }, async (t) => {
+test("MCP 收到早期请求后在启动尚未发布 PID 时收到 EOF，不残留代理或 supervisor", { skip: windowsOnly, timeout: 60000 }, async (t) => {
   const { config, env, beforeCleanup } = await realBridgeFixture(t);
-  const client = await mcpClient(t, env, beforeCleanup);
+  const client = await mcpClient(t, env, beforeCleanup, { initialize: false });
+  assert.ok((await client.request("initialize", { protocolVersion: "2024-11-05" })).serverInfo);
   await waitUntil(async () => {
     try { await readFile(config.configPath); return true; }
     catch (error) { if (error.code === "ENOENT") return false; throw error; }
   });
   assert.equal(await readPid(config), null, "须在实际启动过程中、PID 发布前送 EOF");
   await client.endInput();
+  assert.equal(client.responses.filter((response) => response.result?.serverInfo).length, 1,
+    "MCP 握手仅发布一次成功，后台取消不改变已完成的握手");
   await assertOwnedProcessesExited(config);
   await delay(2500);
   assert.equal((await probeBridge(config)).state, "offline", "EOF 后不能由残留 watchdog 重启");

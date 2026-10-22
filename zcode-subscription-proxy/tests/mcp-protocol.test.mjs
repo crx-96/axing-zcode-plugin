@@ -56,7 +56,7 @@ function harness(t, overrides = {}, options = {}) {
       }
     });
   }
-  const done = runMcp({ config, ...options.ctx }, { input, output, handlers: handlers(overrides) });
+  const done = runMcp({ config, ...options.ctx }, { input, output, handlers: handlers(overrides), prepare: options.prepare });
   t.after(async () => {
     if (!input.destroyed) input.end();
     await done;
@@ -100,6 +100,96 @@ test("输入 destroy 无 error 也会收尾并取消在途调用", { timeout: 30
   await h.done;
   assert.equal(signal.aborted, true);
   assert.equal(h.input.listenerCount("close"), 0);
+});
+
+test("核心下载期间仍响应 ping/status，取消通知与 EOF 传递给启动任务", { timeout: 5000 }, async (t) => {
+  const signals = [];
+  let entered = deferred();
+  const h = harness(t, { ensureRunning: async (_config, { signal }) => {
+    signals.push(signal);
+    entered.resolve();
+    await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  } });
+  h.send(call(1, "bridge_start", {}));
+  await entered.promise;
+  h.send(request(2));
+  assert.deepEqual((await h.response(2)).result, {});
+  h.send(call(3, "bridge_status", {}));
+  assert.equal(JSON.parse(resultText(await h.response(3))).ready, true);
+  h.send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 1 } });
+  assert.equal((await h.response(1)).result.isError, true);
+  assert.equal(signals[0].aborted, true);
+  entered = deferred();
+  h.send(call(4, "bridge_start", {}));
+  await entered.promise;
+  h.input.end();
+  await h.done;
+  assert.equal(signals[1].aborted, true);
+});
+
+test("本地配置准备完成后initialize成功，之前拒绝工具且不重复读取配置", async (t) => {
+  const ready = deferred();
+  let prepared = 0;
+  let invoked = 0;
+  const h = harness(t, { getStatus: async () => { invoked++; return { ready: true }; } }, {
+    prepare: async () => { prepared++; await ready.promise; },
+  });
+  h.send(request(1, "initialize", { protocolVersion: "2025-06-18" }));
+  h.send(request(2, "tools/list"));
+  h.send(call(3, "bridge_status", {}));
+  assert.equal((await h.response(2)).error.code, -32002);
+  assert.equal((await h.response(3)).error.code, -32002);
+  assert.equal(invoked, 0);
+  assert.equal(h.messages.some((message) => message.id === 1), false);
+  h.send(request(4, "initialize", { protocolVersion: "2025-06-18" }));
+  assert.equal((await h.response(4)).error.code, -32600);
+  ready.resolve();
+  assert.ok((await h.response(1)).result.serverInfo);
+  h.send(request(5, "tools/list"));
+  assert.equal((await h.response(5)).result.tools.length, 4);
+  assert.equal(prepared, 1);
+});
+
+test("本地配置失败的initialize是协议错误，后续不发布成功且结束连接", async (t) => {
+  const ready = deferred();
+  const h = harness(t, {}, { prepare: async () => { await ready.promise; throw { safeMessage: "本地配置不可用", code: "BRIDGE_START_FAILED" }; } });
+  h.send(request(1, "initialize", { protocolVersion: "2025-06-18" }));
+  ready.resolve();
+  const failed = await h.response(1);
+  assert.equal(failed.error.code, -32001);
+  assert.match(failed.error.message, /本地配置不可用/);
+  assert.equal(failed.result, undefined);
+  await h.done;
+});
+
+test("initialize取消和EOF均取消准备，清理完成前不返回成功", async (t) => {
+  for (const mode of ["cancel", "eof"]) {
+    const entered = deferred();
+    let signal;
+    const h = harness(t, {}, { prepare: async (value) => {
+      signal = value;
+      entered.resolve();
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    } });
+    h.send(request(1, "initialize", { protocolVersion: "2025-06-18" }));
+    await entered.promise;
+    if (mode === "cancel") h.send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 1 } });
+    else h.input.end();
+    await h.done;
+    assert.equal(signal.aborted, true);
+    assert.ok(!h.messages.some((message) => message.result?.serverInfo));
+  }
+});
+
+test("准备已完成但initialize被取消时仍结束连接，不等待额外EOF", async (t) => {
+  const h = harness(t, {}, { prepare: async () => {} });
+  await nextTurn();
+  h.input.write(JSON.stringify(request(1, "initialize", { protocolVersion: "2025-06-18" })) + "\n" +
+    JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 1 } }) + "\n");
+  const result = await h.response(1);
+  assert.equal(result.error.code, -32001);
+  assert.equal(result.result, undefined);
+  await h.done;
 });
 
 test("initialize 协商已知版本，未知版本不回显，服务版本来自 config", async () => {
@@ -178,10 +268,11 @@ test("图片默认值、Unicode 长度边界与全部枚举选项到达同一 ha
   assert.ok((await handleMessage(call(4, "bridge_generate_image", { prompt: "🐈".repeat(32_000), model: "m".repeat(200) }), { config }, { handlers: injected })).result);
 });
 
-test("start/stop 只传 config、投影正常结果、未就绪或未停止标 isError", async () => {
+test("start 传递取消信号，start/stop 投影结果并标识未就绪", async () => {
+  const signal = new AbortController().signal;
   for (const ready of [true, false]) {
-    const response = await handleMessage(call(1, "bridge_start", {}), { config }, { handlers: handlers({ ensureRunning: async (...args) => {
-      assert.deepEqual(args, [config]);
+    const response = await handleMessage(call(1, "bridge_start", {}), { config }, { signal, handlers: handlers({ ensureRunning: async (...args) => {
+      assert.deepEqual(args, [config, { signal }]);
       return { started: true, ready, reason: "受控原因", child: { secret: "不可输出" } };
     } }) });
     assert.deepEqual(JSON.parse(resultText(response)), { started: true, ready, reason: "受控原因" });

@@ -4,7 +4,7 @@
       "type": "stdio",
       "command": "powershell.exe",
       "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/scripts/start-mcp.ps1"],
-      "timeoutMs": 300000
+      "timeoutMs": 660000
     }
   }
 }

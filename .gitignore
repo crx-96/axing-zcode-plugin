@@ -8,6 +8,15 @@
 **/*.paused
 **/*.log
 **/*.tmp
+# CLIProxyAPI 在 MCP 初始化时按当前平台下载；源码分发保留平台清单、文档和许可证。
+# 白名单也防止新平台目录、归档和未命名的本地核心被重新纳入。
+zcode-subscription-proxy/bridge/bin/*
+!zcode-subscription-proxy/bridge/bin/LICENSE
+!zcode-subscription-proxy/bridge/bin/README.md
+!zcode-subscription-proxy/bridge/bin/README_CN.md
+!zcode-subscription-proxy/bridge/bin/config.example.yaml
+!zcode-subscription-proxy/bridge/bin/platforms.json
+**/runtimes/
 node_modules/
 coverage/
 .zcode/

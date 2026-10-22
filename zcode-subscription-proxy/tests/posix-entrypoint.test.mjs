@@ -101,14 +101,14 @@ async function sourceFixture(t) {
   const repository = join(directory, "源仓库 中文 空格");
   const plugin = join(repository, "zcode-subscription-proxy");
   const target = join(directory, "目标市场 中文 空格 '保持字面量'");
-  const catalog = { name: "axing-zcode-plugins", owner: { name: "crx-96" }, plugins: [{ name: "zcode-subscription-proxy", source: "./zcode-subscription-proxy", version: "0.1.0" }] };
+  const catalog = { name: "axing-zcode-plugins", owner: { name: "crx-96" }, plugins: [{ name: "zcode-subscription-proxy", source: "./zcode-subscription-proxy", version: "0.2.2" }] };
   await put(join(repository, ".claude-plugin", "marketplace.json"), JSON.stringify(catalog, null, 2) + "\n");
   await put(join(repository, "README.md"), "市场安装说明 fixture\n");
   await put(join(repository, "LICENSE"), "市场许可证 fixture\n");
-  await put(join(plugin, ".zcode-plugin", "plugin.json"), JSON.stringify({ name: "zcode-subscription-proxy", version: "0.1.0", mcpServers: "./.mcp.json" }));
+  await put(join(plugin, ".zcode-plugin", "plugin.json"), JSON.stringify({ name: "zcode-subscription-proxy", version: "0.2.2", mcpServers: "./.mcp.json" }));
   await copyFile(join(root, ".mcp.posix.json"), join(plugin, ".mcp.posix.json"));
   await copyFile(join(root, ".mcp.json"), join(plugin, ".mcp.json"));
-  for (const file of ["README.md", "LICENSE", "DISCLAIMER.md", "THIRD_PARTY_NOTICES.md", "Antigravity授权.cmd", "bridge/panel/LICENSE", "bridge/panel/management.upstream.html", "bridge/bin/LICENSE", "bridge/bin/README.md", "bridge/bin/README_CN.md", "bridge/bin/config.example.yaml", "bridge/bin/platforms.json", "bridge/bin/zcode-plugin-subscription-proxy.exe", "bridge/config.mjs", "bridge/posix-supervisor.mjs", "scripts/antigravity-login.ps1", "scripts/image-preview.ps1", "scripts/mcp-server.mjs", "scripts/proxy-supervisor.ps1", "scripts/proxy-supervisor.mjs", "scripts/ProxyJob.cs", "scripts/start-mcp.ps1"]) {
+  for (const file of ["README.md", "LICENSE", "DISCLAIMER.md", "THIRD_PARTY_NOTICES.md", "Antigravity授权.cmd", "bridge/panel/LICENSE", "bridge/panel/management.upstream.html", "bridge/bin/LICENSE", "bridge/bin/README.md", "bridge/bin/README_CN.md", "bridge/bin/config.example.yaml", "bridge/bin/platforms.json", "bridge/bin/zcode-plugin-subscription-proxy.exe", "bridge/config.mjs", "bridge/core-runtime.mjs", "bridge/posix-supervisor.mjs", "scripts/antigravity-login.ps1", "scripts/image-preview.ps1", "scripts/mcp-server.mjs", "scripts/proxy-supervisor.ps1", "scripts/proxy-supervisor.mjs", "scripts/ProxyJob.cs", "scripts/start-mcp.ps1"]) {
     await put(join(plugin, file), `fixture: ${file}\n`);
   }
   for (const platform of ["darwin-x64", "darwin-arm64", "linux-x64", "linux-arm64"]) {
@@ -119,7 +119,7 @@ async function sourceFixture(t) {
   await put(join(plugin, "scripts", "start-mcp.sh"), launcherText);
   const prepare = join(plugin, "scripts", "prepare-posix-marketplace.sh");
   await put(prepare, prepareText);
-  for (const file of ["data/auth.json", "bridge/data/auth.json", "tests/temporary/private.json", "unknown.tmp", "scripts/unknown.tmp", "bridge/unknown.tmp", "bridge/bin/unknown.tmp", "bridge/bin/linux-x64/unknown.tmp", "bridge/panel/unknown.tmp", ".zcode-plugin/unknown.tmp"]) {
+  for (const file of ["data/auth.json", "bridge/data/auth.json", "tests/temporary/private.json", "unknown.tmp", "scripts/unknown.tmp", "bridge/unknown.tmp", "bridge/bin/unknown.tmp", "bridge/bin/CLIProxyAPI_8.0.38_windows_amd64.zip", "bridge/bin/CLIProxyAPI_8.0.38_linux_amd64.tar.gz", "bridge/bin/linux-x64/unknown.tmp", "bridge/panel/unknown.tmp", ".zcode-plugin/unknown.tmp"]) {
     await put(join(plugin, file), "must-not-copy-private-fixture\n");
   }
   return { directory, repository, plugin, target, prepare, catalog };
@@ -144,7 +144,8 @@ test("POSIX 清单显式 sh 调用且默认 Windows 清单保留；新脚本 LF"
   const posix = JSON.parse(await readFile(join(root, ".mcp.posix.json"), "utf8"));
   const windows = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
   assert.equal(windows.mcpServers["zcode-subscription-proxy"].command, "powershell.exe");
-  assert.deepEqual(posix.mcpServers["zcode-subscription-proxy"], { type: "stdio", command: "/bin/sh", args: ["${CLAUDE_PLUGIN_ROOT}/scripts/start-mcp.sh"], timeoutMs: 300000 });
+  assert.equal(windows.mcpServers["zcode-subscription-proxy"].timeoutMs, 660000);
+  assert.deepEqual(posix.mcpServers["zcode-subscription-proxy"], { type: "stdio", command: "/bin/sh", args: ["${CLAUDE_PLUGIN_ROOT}/scripts/start-mcp.sh"], timeoutMs: 660000 });
   assert.ok(!launcherText.includes("\r"));
   assert.ok(!prepareText.includes("\r"));
 });
@@ -225,7 +226,7 @@ test("Git Bash/fake Darwin：HOME 标准 ZCode 候选仍执行版本探测", { s
   assert.equal((await runtimeRoundtrip(fixture)).stderr, "selected=home-electron\n");
 });
 
-test("prepare：生成独立市场、原样 catalog、POSIX 清单、四平台核心、只复制 allowlist，源文件不变", { skip: shellSkip }, async (t) => {
+test("prepare：生成独立市场、原样 catalog、POSIX 清单，不复制任何平台核心与归档，源文件不变", { skip: shellSkip }, async (t) => {
   const fixture = await sourceFixture(t);
   const before = await snapshot(fixture.repository);
   const result = await runShell(fixture.prepare, [posixPath(fixture.target)]);
@@ -247,12 +248,26 @@ test("prepare：生成独立市场、原样 catalog、POSIX 清单、四平台�
   assert.ok(copied["scripts/antigravity-login.ps1"]);
   assert.ok(copied["scripts/start-mcp.ps1"]);
   for (const file of Object.keys(copied)) assert.doesNotMatch(file, /(^|\/)data\/|(^|\/)tests\/|unknown\.tmp/);
+  assert.ok(copied["bridge/core-runtime.mjs"]);
+  assert.deepEqual(Object.keys(copied).filter((file) => file.startsWith("bridge/bin/")), [
+    "bridge/bin/LICENSE", "bridge/bin/README.md", "bridge/bin/README_CN.md",
+    "bridge/bin/config.example.yaml", "bridge/bin/platforms.json",
+  ]);
+  for (const file of Object.keys(copied)) assert.doesNotMatch(file, /\.(?:exe|zip|gz)$|bridge\/bin\/(?:darwin|linux)-/);
+});
+
+test("prepare：源目录没有任何平台二进制仍能完整打包许可证和下载清单", { skip: shellSkip }, async (t) => {
+  const fixture = await sourceFixture(t);
+  await rm(join(fixture.plugin, "bridge/bin/zcode-plugin-subscription-proxy.exe"));
   for (const platform of ["darwin-x64", "darwin-arm64", "linux-x64", "linux-arm64"]) {
-    assert.ok(copied[`bridge/bin/${platform}/zcode-plugin-subscription-proxy`]);
-    if (process.platform !== "win32") assert.equal(copied[`bridge/bin/${platform}/zcode-plugin-subscription-proxy`].mode & 0o777, 0o755);
-    const { stdout } = await execute(shell, ["-c", 'test -x "$1" && printf executable', "test", posixPath(join(copy, "bridge/bin", platform, "zcode-plugin-subscription-proxy"))]);
-    assert.equal(stdout, "executable");
+    await rm(join(fixture.plugin, "bridge/bin", platform), { recursive: true });
   }
+  await runShell(fixture.prepare, [posixPath(fixture.target)]);
+  const copied = await snapshot(join(fixture.target, "zcode-subscription-proxy"));
+  for (const file of ["bridge/core-runtime.mjs", "bridge/bin/LICENSE", "bridge/bin/platforms.json", "THIRD_PARTY_NOTICES.md"]) {
+    assert.ok(copied[file]);
+  }
+  assert.equal(Object.keys(copied).some((file) => /\.(?:exe|zip|gz)$|bridge\/bin\/(?:darwin|linux)-/.test(file)), false);
 });
 
 test("prepare：拒绝重复目标（包括空目录）而且保留已有目标内容", { skip: shellSkip }, async (t) => {
@@ -279,9 +294,9 @@ test("prepare：支持相对中文空格路径与尾斜杠，拒绝源仓库内�
   await assert.rejects(access(join(cache, "新缓存")), { code: "ENOENT" });
 });
 
-test("prepare：缺失核心或源文件时失败并清理本次未完成副本", { skip: shellSkip }, async (t) => {
+test("prepare：缺失平台清单等必要源文件时失败并清理本次未完成副本", { skip: shellSkip }, async (t) => {
   const fixture = await sourceFixture(t);
-  const missing = join(fixture.plugin, "bridge/bin/linux-arm64/zcode-plugin-subscription-proxy");
+  const missing = join(fixture.plugin, "bridge/bin/platforms.json");
   await rm(missing);
   const before = await snapshot(fixture.repository);
   await assert.rejects(runShell(fixture.prepare, [posixPath(fixture.target)]), (error) => /分发文件缺失/.test(error.stderr));

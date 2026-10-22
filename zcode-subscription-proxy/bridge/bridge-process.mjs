@@ -7,13 +7,16 @@ import { createServer } from "node:net";
 import { randomUUID, createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
-import { renderConfigYaml, validateExistingConfig, resolveBundledBinaryPath } from "./config.mjs";
+import { renderConfigYaml, validateExistingConfig } from "./config.mjs";
+import { ensureCore, getCoreStatus } from "./core-runtime.mjs";
 import { spawnPosixSupervisor, queryPosixSupervisor } from "./posix-supervisor.mjs";
 import { requestLocal, httpFailure } from "./local-http.mjs";
 import { prepareManagementPanel, PANEL_REVISION } from "./management-panel.mjs";
 
 const execFileAsync = promisify(execFile);
 const inFlight = new Map();
+/** 仅取消本会话发起的启动任务；跨会话停止意图由 pausedPath 保留。 */
+const startControllers = new Map();
 // 只保存当前 MCP 创建的 supervisor 句柄；退出时不能结束别的会话所拥有的代理。
 const supervisors = new Map();
 const supervisorScript = fileURLToPath(new URL("../scripts/proxy-supervisor.ps1", import.meta.url));
@@ -60,7 +63,7 @@ async function probeModels(config) {
 
 // POSIX 用回环端口而不是磁盘 socket 作锁，进程被强杀也不会留下可被误删的锁文件。
 // 哈希碰撞只会保守地等待/报错，不抢占监听者；realpath 合并指向同一数据目录的别名。
-export async function withLifecycleLock(config, action, timeoutMs = 25000) {
+export async function withLifecycleLock(config, action, timeoutMs = 25000, signal) {
   if (!["win32", "darwin", "linux"].includes(process.platform)) throw bridgeError("不支持此操作系统");
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
   const directory = await realpath(config.dataDir);
@@ -75,6 +78,7 @@ export async function withLifecycleLock(config, action, timeoutMs = 25000) {
   const deadline = Date.now() + timeoutMs;
   let owner;
   while (!owner) {
+    signal?.throwIfAborted();
     const candidate = createServer((socket) => socket.destroy());
     try {
       await new Promise((resolve, reject) => {
@@ -86,10 +90,10 @@ export async function withLifecycleLock(config, action, timeoutMs = 25000) {
       candidate.close();
       if (error.code !== "EADDRINUSE") throw error;
       if (Date.now() >= deadline) throw bridgeError("另一会话正在启动或停止订阅桥，请稍后重试");
-      await delay(100);
+      await delay(100, undefined, { signal });
     }
   }
-  try { return await action(); }
+  try { signal?.throwIfAborted(); return await action(); }
   finally { await new Promise((resolve) => owner.close(resolve)); }
 }
 
@@ -177,26 +181,27 @@ async function closeSupervisor(child) {
 }
 
 async function prepareExecutable(config) {
-  if (process.platform === "win32") return;
-  try { await access(config.binPath, constants.X_OK); }
+  try { await access(config.binPath, process.platform === "win32" ? constants.F_OK : constants.X_OK); }
   catch {
-    const pluginRoot = fileURLToPath(new URL("../", import.meta.url));
-    if (config.binPath !== resolveBundledBinaryPath({ pluginRoot })) {
+    if (!config.core) {
       throw bridgeError("BRIDGE_BIN 不存在或没有执行权限；请检查自定义程序，不会修改其权限");
     }
-    // Windows 打包或 ZIP 解压可能丢失执行位；只修复随包核心，绝不改自定义程序权限。
+    // 仅恢复已通过固定摘要校验的缓存核心，不修改用户指定的程序。
     try { await chmod(config.binPath, 0o755); await access(config.binPath, constants.X_OK); }
-    catch { throw bridgeError("随包代理无法执行；请检查安装文件、执行权限与文件系统限制"); }
+    catch { throw bridgeError("缓存代理无法执行；请检查文件权限与文件系统限制"); }
   }
 }
 
-async function launch(config) {
+async function launch(config, signal) {
+  signal?.throwIfAborted();
   if (closing) throw bridgeError("MCP 会话正在关闭，不再启动代理");
   const previous = supervisors.get(config.dataDir);
   if (previous) await closeSupervisor(previous);
   await prepareExecutable(config);
   await ensureDataDir(config);
   const panelDirectory = await prepareManagementPanel(config);
+  signal?.throwIfAborted();
+  if (closing) throw bridgeError("MCP 会话正在关闭，不再启动代理");
   const child = process.platform !== "win32" ? spawnPosixSupervisor(config, panelDirectory) : spawn(powerShell, [
     "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", supervisorScript,
     "-OwnerPid", String(process.pid), "-BinPath", config.binPath,
@@ -221,6 +226,7 @@ async function launch(config) {
       const timer = setTimeout(() => finish(bridgeError("代理托管器启动超时")), 15000);
       const onExit = () => finish(bridgeError("代理托管器启动失败，请检查运行依赖与日志"));
       const onError = () => finish(bridgeError("无法启动代理托管器，请检查平台运行时与执行权限"));
+      const onAbort = () => finish(bridgeError("启动已取消，正在回收本次代理"));
       const onData = (chunk) => {
         buffer += chunk;
         if (Buffer.byteLength(buffer) > 8192) return finish(bridgeError("代理托管器响应无效"));
@@ -236,12 +242,15 @@ async function launch(config) {
         child.off("exit", onExit);
         child.off("error", onError);
         child.stdout.off("data", onData);
+        signal?.removeEventListener("abort", onAbort);
         child.stdout.resume();
         if (error) reject(error); else resolve(value);
       }
       child.once("error", onError);
       child.once("exit", onExit);
       child.stdout.on("data", onData);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     });
     const identity = process.platform === "win32"
       ? await processIdentity(launched.pid)
@@ -250,6 +259,7 @@ async function launch(config) {
     await savePid(config, { ...identity, binPath: config.binPath, configPath: config.configPath, panelRevision: PANEL_REVISION });
     const deadline = Date.now() + 15000;
     while (Date.now() < deadline) {
+      signal?.throwIfAborted();
       if (closing || child.exitCode !== null || child.signalCode !== null) throw bridgeError("代理启动已中止");
       const probe = await probeBridge(config);
       if (probe.state === "bridge") {
@@ -257,7 +267,7 @@ async function launch(config) {
         return { started: true, ready: true, reason: "zcode 订阅代理已启动并受进程生命周期托管" };
       }
       if (probe.state === "foreign") throw bridgeError(probe.reason);
-      await delay(250);
+      await delay(250, undefined, { signal });
     }
     throw bridgeError("代理未在启动时限内就绪，已回收本次启动的进程");
   } catch (error) {
@@ -268,50 +278,104 @@ async function launch(config) {
 
 export async function shutdownOwnedBridges() {
   closing = true;
+  for (const controller of startControllers.values()) controller.abort();
   await Promise.allSettled([...inFlight.values()]);
   // 只关闭本 MCP 持有的 Job 或租约；不按 PID 文件或进程名称清理其他会话。
   await Promise.all([...supervisors.values()].map(closeSupervisor));
 }
 
-/** 显式 start 清除暂停标记；后台恢复遵守跨会话的用户停止意图。 */
-export async function ensureRunning(config, { automatic = false } = {}) {
+/** 必须在生命周期锁内调用；返回 null 才允许后续准备核心或启动，绝不接管外部进程。 */
+async function inspectRunning(config) {
+  const probe = await probeBridge(config);
+  if (probe.state === "bridge") {
+    const tracked = await trackedProcess(config);
+    if (!tracked?.owned) throw bridgeError("端口上是旧版或外部 CLIProxyAPI；请先手动停止旧版，新版不会接管");
+    if (tracked.record.panelRevision !== PANEL_REVISION) {
+      throw bridgeError("当前进程尚未加载网页授权修复；请先 bridge_stop，再 bridge_start。不会自动中断正在进行的请求。");
+    }
+    await probeModels(config);
+    return { started: false, ready: true, reason: "复用本版本已验证的桥进程" };
+  }
+  if (probe.state !== "offline") throw bridgeError(probe.reason);
+  const tracked = await trackedProcess(config);
+  if (tracked?.owned || (tracked?.identity && tracked.record.creationDate === tracked.identity.creationDate)) {
+    throw bridgeError("记录的进程仍存在但服务未就绪，不会重复启动或强制结束");
+  }
+  return null;
+}
+
+/** 等待已有启动时只取消本调用的等待，不取消另一调用拥有的下载。 */
+async function waitForStart(work, signal) {
+  signal?.throwIfAborted();
+  if (!signal) return work;
+  let onAbort;
+  try {
+    return await Promise.race([work, new Promise((_, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+    })]);
+  } finally { signal.removeEventListener("abort", onAbort); }
+}
+
+/**
+ * 启动或复用代理，网络准备不占生命周期锁；暂停和进程归属在下载前后都要核对。
+ * automatic=true 保留用户暂停；allowDownload 默认只对显式启动开放，入口的首次后台准备可显式开启。
+ * watchdog 沿用 automatic=true 的默认值，不下载或自动重试下载；signal 取消本次拥有的任务。
+ */
+export async function ensureRunning(config, { automatic = false, allowDownload = !automatic, signal } = {}) {
+  // 会话结束后禁止新启动；并发显式调用等待已有任务，自动巡检直接返回处理中。
+  signal?.throwIfAborted();
   if (closing) throw bridgeError("MCP 会话正在关闭，不再启动代理");
   const key = config.dataDir;
-  if (inFlight.has(key)) {
-    const result = await inFlight.get(key);
-    if (automatic) return { ...result, started: false };
+  while (inFlight.has(key)) {
+    if (automatic) return { started: false, ready: false, reason: "另一启动任务正在准备核心或启动代理" };
+    await waitForStart(inFlight.get(key), signal);
   }
-  const work = withLifecycleLock(config, async () => {
-    if (automatic && await readOptional(config.pausedPath) !== null) {
-      return { started: false, ready: false, reason: "用户已停止桥，自动恢复已暂停" };
-    }
-    if (!automatic) await unlink(config.pausedPath).catch((error) => { if (error.code !== "ENOENT") throw error; });
-    const probe = await probeBridge(config);
-    if (probe.state === "bridge") {
-      const tracked = await trackedProcess(config);
-      if (!tracked?.owned) throw bridgeError("端口上是旧版或外部 CLIProxyAPI；请先手动停止旧版，新版不会接管");
-      if (tracked.record.panelRevision !== PANEL_REVISION) {
-        throw bridgeError("当前进程尚未加载网页授权修复；请先 bridge_stop，再 bridge_start。不会自动中断正在进行的请求。");
+  // 内部取消器供 bridge_stop 和会话回收使用，与请求取消共同终止下载/启动。
+  const controller = new AbortController();
+  const activeSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  startControllers.set(key, controller);
+  const work = (async () => {
+    // 先在锁内检查持久暂停和既有代理；只有显式启动才清除暂停标记。
+    const existing = await withLifecycleLock(config, async () => {
+      if (automatic && await readOptional(config.pausedPath) !== null) {
+        return { started: false, ready: false, reason: "用户已停止桥，自动恢复已暂停" };
       }
-      await probeModels(config);
-      return { started: false, ready: true, reason: "复用本版本已验证的桥进程" };
-    }
-    if (probe.state !== "offline") throw bridgeError(probe.reason);
-    const tracked = await trackedProcess(config);
-    if (tracked?.owned || (tracked?.identity && tracked.record.creationDate === tracked.identity.creationDate)) {
-      throw bridgeError("记录的进程仍存在但服务未就绪，不会重复启动或强制结束");
-    }
-    return launch(config);
-  });
+      if (!automatic) await unlink(config.pausedPath).catch((error) => { if (error.code !== "ENOENT") throw error; });
+      return inspectRunning(config);
+    }, 25000, activeSignal);
+    if (existing) return existing;
+
+    // 首次后台准备和显式启动可以安装核心；只读自动恢复不能发起网络下载。
+    const core = await ensureCore(config, { allowDownload, signal: activeSignal });
+    if (!core.available) return { started: false, ready: false, reason: core.reason };
+    activeSignal.throwIfAborted();
+    return withLifecycleLock(config, async () => {
+      // 下载期间另一会话可以停止或启动桥；发布核心后必须重新核对状态。
+      if (await readOptional(config.pausedPath) !== null) {
+        return { started: false, ready: false, reason: "准备核心期间用户已停止桥，未启动代理" };
+      }
+      const running = await inspectRunning(config);
+      if (running) return running;
+      const checked = await ensureCore(config, { allowDownload: false, signal: activeSignal });
+      if (!checked.available) return { started: false, ready: false, reason: checked.reason };
+      return launch(config, activeSignal);
+    }, 25000, activeSignal);
+  })();
   inFlight.set(key, work);
   try { return await work; }
-  finally { if (inFlight.get(key) === work) inFlight.delete(key); }
+  finally {
+    // 成功、失败和取消均释放本任务的登记，不覆盖后续任务的控制器。
+    if (inFlight.get(key) === work) inFlight.delete(key);
+    if (startControllers.get(key) === controller) startControllers.delete(key);
+  }
 }
 
 export async function stopBridge(config) {
   return withLifecycleLock(config, async () => {
     // 先持久暂停，其他会话的 watchdog 才不会在停止后立即拉起。
     await writeFile(config.pausedPath, "Stopped by user\n", { mode: 0o600 });
+    startControllers.get(config.dataDir)?.abort();
     const tracked = await trackedProcess(config);
     if (!tracked?.identity) return { stopped: false, reason: "未发现本版本运行的进程；自动恢复已暂停" };
     if (!tracked.owned) return { stopped: false, reason: "进程归属校验失败；未停止其他版本或外部进程" };
@@ -365,6 +429,7 @@ export async function getStatus(config) {
     dataDir: config.dataDir, configPath: config.configPath,
     credentialsFile: join(config.dataDir, "launcher-secrets.json"),
     authCount, models: modelState, autoRecoveryPaused: await readOptional(config.pausedPath) !== null,
+    core: await getCoreStatus(config),
     loginHint: "管理网页密码固定为 123456；模型 API Key 在本地 launcher-secrets.json 查看。Antigravity 使用网页手动回填：Google 授权后复制 localhost:51121 完整回调地址，返回管理页粘贴并提交；无需监听该端口。",
   };
 }

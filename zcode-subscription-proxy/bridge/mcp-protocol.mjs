@@ -40,17 +40,17 @@ const IMAGE_SCHEMA = {
 const TOOLS = [
   {
     name: "bridge_status",
-    description: "查看订阅桥运行状态、就绪情况与已登录订阅信息；不会执行登录。",
+    description: "查看订阅桥运行状态、核心后台下载状态和启动失败原因；MCP 已连接不代表代理已就绪，ready=true 才可使用代理。不会执行登录。",
     inputSchema: EMPTY_SCHEMA,
   },
   {
     name: "bridge_start",
-    description: "启动订阅桥；已就绪时复用现有实例。失败时先检查原因，不盲目重试。",
+    description: "解除暂停并启动订阅桥，或在后台核心下载失败后手动重试。首次下载在后台自动进行，不阻塞 MCP 握手；已有准备任务时等待同一次尝试，已就绪时复用实例。失败时先检查原因，不盲目重试。",
     inputSchema: EMPTY_SCHEMA,
   },
   {
     name: "bridge_stop",
-    description: "停止本插件管理的订阅桥；不停止无法确认归属的其他进程。",
+    description: "暂停本插件管理的订阅桥并取消本会话在途的核心下载/启动；重连后仍保持暂停。不停止无法确认归属的其他进程。",
     inputSchema: EMPTY_SCHEMA,
   },
   {
@@ -65,6 +65,9 @@ const SAFE_CODES = new Set([
   "ENOTFOUND", "EAI_AGAIN", "ERR_INVALID_ARG_VALUE", "ERR_INVALID_ARG_TYPE",
   "BRIDGE_NOT_READY", "BRIDGE_START_FAILED", "IMAGE_GENERATION_FAILED", "RATE_LIMITED", "TIMEOUT",
   "INVALID_ARGUMENT", "BRIDGE_UNAVAILABLE", "IMAGE_CONNECTION_FAILED",
+  "CORE_CONFIG", "CORE_CANCELLED", "CORE_TIMEOUT", "CORE_CURL", "CORE_DOWNLOAD", "CORE_SIZE",
+  "CORE_ARCHIVE_HASH", "CORE_BINARY_HASH", "CORE_ARCHIVE", "CORE_PATH", "CORE_CACHE",
+  "CORE_PUBLISH", "CORE_CLEANUP", "CORE_LOCK",
 ]);
 
 /** 判断 JSON 对象；数组、null 和标量不能冒充参数对象。 */
@@ -143,7 +146,7 @@ function validateArguments(schema, args) {
 
 /**
  * 执行已验证的工具；测试只替换依赖函数，不另造分发逻辑。
- * ctx 仅含 config 与可选 startupError，signal 只传给支持取消的图片模块。
+ * ctx 仅含 config 与可选 startupError；启动下载与图片模块共享请求级取消信号。
  */
 async function callTool(name, args, ctx, handlers, signal) {
   const { config } = ctx;
@@ -154,7 +157,7 @@ async function callTool(name, args, ctx, handlers, signal) {
       return textResult(ctx.startupError ? { ...status, startupError: safeError(ctx.startupError, config) } : status);
     }
     case "bridge_start": {
-      const result = await handlers.ensureRunning(config);
+      const result = await handlers.ensureRunning(config, { signal });
       const started = result?.started === true;
       const ready = result?.ready === true;
       return textResult({ started, ready, reason: safeReason(result?.reason, ready ? "已就绪" : "启动未就绪", config) }, !ready);
@@ -223,10 +226,10 @@ export async function handleMessage(message, ctx, { handlers = {}, signal } = {}
  * 运行按行 JSON-RPC 会话。工具不阻塞读循环，stdout 串行且遵守背压。
  * EOF、输入关闭/错误或断管会取消在途请求；最多等待一秒，代理回收由入口负责。
  * @param {{config: object, startupError?: unknown}} ctx 会话上下文
- * @param {object} [options] 可注入 input/output 和模块 handlers，测试无需真实桥
+ * @param {object} [options] 可注入 input/output、handlers 和可取消的本地配置 prepare；prepare 不得等待网络或代理就绪
  * @returns {Promise<void>} 会话停止且已完成有界收尾
  */
-export async function runMcp(ctx, { input = process.stdin, output = process.stdout, handlers = {} } = {}) {
+export async function runMcp(ctx, { input = process.stdin, output = process.stdout, handlers = {}, prepare } = {}) {
   const decoder = new StringDecoder("utf8");
   let inputLine = "";
   let discardingLine = false;
@@ -242,6 +245,15 @@ export async function runMcp(ctx, { input = process.stdin, output = process.stdo
   let queuedBytes = 0;
   let resolveInput;
   const inputDone = new Promise((resolve) => { resolveInput = resolve; });
+  /** 本地配置准备及入口后台任务共享连接生命周期；配置可用后即可发布 MCP 能力。 */
+  const preparationController = new AbortController();
+  let initialized = !prepare;
+  let preparationError;
+  const preparation = prepare ? Promise.resolve().then(() => prepare(preparationController.signal)).catch((error) => {
+    preparationError = error;
+    ctx.startupError = error;
+    stopReading();
+  }) : Promise.resolve();
 
   /** 只停止本会话读取与请求；不退出进程、不调用 stopBridge。 */
   function stopReading() {
@@ -249,6 +261,7 @@ export async function runMcp(ctx, { input = process.stdin, output = process.stdo
     readingClosed = true;
     inputLine = "";
     input.pause();
+    preparationController.abort();
     for (const request of requests.values()) request.controller.abort();
     resolveInput();
   }
@@ -317,15 +330,24 @@ export async function runMcp(ctx, { input = process.stdin, output = process.stdo
 
   /** 注册响应任务，异常只产生安全协议错误，不打断后续工具调用。 */
   function dispatch(message) {
-    const isTool = validEnvelope(message) && Object.hasOwn(message, "id") && message.method === "tools/call";
+    const validRequest = validEnvelope(message) && Object.hasOwn(message, "id");
+    const isTool = validRequest && message.method === "tools/call";
+    const isInitialize = Boolean(prepare && validRequest && message.method === "initialize");
+    if (prepare && !initialized && validRequest && ["tools/list", "tools/call"].includes(message.method)) {
+      return send(fail(message.id, -32002, "本地配置尚未初始化完成，请等待 MCP 初始化成功。"));
+    }
+    if (isInitialize && [...requests.values()].some((request) => request.initializing)) {
+      return send(fail(message.id, -32600, "初始化请求正在处理中。"));
+    }
     let request;
     if (validEnvelope(message) && Object.hasOwn(message, "id") && requests.has(message.id)) {
       return send(fail(message.id, -32600, "请求 ID 已在使用。"));
     }
-    if (isTool) {
+    if (isTool || isInitialize) {
       if (requests.size >= MAX_TOOLS) return send(ok(message.id, textResult("同时执行的工具已达 8 个；未执行本次调用，请等待已有调用结束。", true)));
-      request = { controller: new AbortController(), timer: null };
+      request = { controller: new AbortController(), timer: null, initializing: isInitialize };
       requests.set(message.id, request);
+      if (isInitialize) request.controller.signal.addEventListener("abort", stopReading, { once: true });
       const token = message.params?._meta?.progressToken;
       if (isId(token)) {
         let progress = 0;
@@ -338,7 +360,16 @@ export async function runMcp(ctx, { input = process.stdin, output = process.stdo
         request.controller.signal.addEventListener("abort", () => clearInterval(request.timer), { once: true });
       }
     }
-    const task = handleMessage(message, ctx, { handlers, signal: request?.controller.signal })
+    const task = (async () => {
+      if (isInitialize) {
+        await preparation;
+        if (preparationError) return fail(message.id, -32001, safeError(preparationError, ctx.config));
+        if (preparationController.signal.aborted) return fail(message.id, -32001, "MCP 初始化已取消，未报告就绪。");
+      }
+      const response = await handleMessage(message, ctx, { handlers, signal: request?.controller.signal });
+      if (isInitialize && response?.result) initialized = true;
+      return response;
+    })()
       .then((response) => {
         if (request) clearInterval(request.timer);
         return send(response);
@@ -401,6 +432,7 @@ export async function runMcp(ctx, { input = process.stdin, output = process.stdo
     }
   }
 
+  /** EOF 时消费残留的完整 UTF-8 行，再取消工具与入口共享的会话信号。 */
   function onEnd() {
     onData(decoder.end());
     if (!discardingLine && inputLine) onLine(inputLine);
@@ -417,6 +449,8 @@ export async function runMcp(ctx, { input = process.stdin, output = process.stdo
   if (output.destroyed || output.writableEnded) breakOutput();
   if (input.destroyed || input.readableEnded) stopReading();
   await inputDone;
+  // 等待本地配置准备结束；后台下载/启动的取消清理由持有任务的入口负责。
+  await preparation;
   let deadline;
   await Promise.race([
     Promise.allSettled([...pending]).then(() => writeQueue),

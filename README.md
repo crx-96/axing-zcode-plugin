@@ -6,7 +6,7 @@
 
 | 插件 | 版本 | 平台 | 说明 |
 | --- | --- | --- | --- |
-| [zcode订阅代理](zcode-subscription-proxy/README.md) | 0.1.1 | Windows x64；macOS / Linux x64、ARM64 | 基于 CLIProxyAPI 的本地订阅授权、OpenAI 兼容 API 与图片生成；macOS/Linux 先准备 POSIX 本地市场 |
+| [zcode订阅代理](zcode-subscription-proxy/README.md) | 0.2.2 | Windows x64；macOS / Linux x64、ARM64 | 基于 CLIProxyAPI 的本地订阅授权、OpenAI 兼容 API 与图片生成；macOS/Linux 先准备 POSIX 本地市场 |
 
 使用前请阅读 [免责声明](zcode-subscription-proxy/DISCLAIMER.md) 和 [第三方软件说明](zcode-subscription-proxy/THIRD_PARTY_NOTICES.md)。本仓库不是 ZCode、CLIProxyAPI 或模型服务商的官方项目。
 
@@ -38,18 +38,24 @@ sh zcode-subscription-proxy/scripts/prepare-posix-marketplace.sh "$HOME/zcode-su
 
 ### 安装及更新
 
-1. 添加后进入 **个人 → axing-zcode-plugins**，找到 **zcode订阅代理**，确认版本 `0.1.1`，点击 **安装**。
-2. 在 **设置 → 插件** 检查插件已启用；然后新建任务，让 ZCode 连接插件 MCP。
-3. 按 [插件使用指南](zcode-subscription-proxy/README.md) 打开本机管理网页、登录并配置模型。
+1. 添加后进入 **个人 → axing-zcode-plugins**，找到 **zcode订阅代理**，确认版本 `0.2.2`，点击 **安装**。
+2. 在 **设置 → 插件** 检查插件已启用，并在宿主 MCP 设置中连接/重连插件。宿主拉起 MCP 进程后会自动准备核心、启动代理，无需先配置聊天模型或让 AI 调用工具。
+3. MCP 初始化成功后，继续等待后台核心准备和代理启动完成，再按 [插件使用指南](zcode-subscription-proxy/README.md) 打开本机管理网页、登录并配置模型；曾调用 `bridge_stop` 主动暂停的需显式恢复。
 4. 更新时进入插件市场齿轮菜单的 **市场源**，刷新该市场，再进入插件详情点击 **更新**。仅刷新市场不会自动替换已安装插件。更新后新建任务或重连 MCP。
 
 市场名称：`axing-zcode-plugins`。插件完整 ID：`zcode-subscription-proxy@axing-zcode-plugins`。
 
 ## 平台与启动边界
 
-`0.1.1` 提供 Windows x64、macOS Intel / Apple Silicon、Linux x64 / ARM64 的核心与对应启动实现。Windows 保持原安装方式，macOS/Linux 使用上面的 POSIX 本地市场。具体运行依赖与实测边界见 [兼容性表](zcode-subscription-proxy/README.md#支持平台和版本)；当前开发机仅能实测 Windows，不能将静态架构校验和模拟测试视为 macOS/Linux 实机验收。Windows 32 位及原生 Windows ARM64 暂不支持。
+`0.2.2` 支持 Windows x64、macOS Intel / Apple Silicon、Linux x64 / ARM64，但分发包不再包含五平台 CLIProxyAPI 二进制。**宿主拉起插件 MCP 进程就会自动准备当前平台核心**：缺少有效缓存时只下载固定 `v8.0.38` 的当前平台核心，校验归档及二进制 SHA256 后缓存；平台清单、来源文档和许可证仍保留。Windows 保持原安装方式，macOS/Linux 使用上面的 POSIX 本地市场。具体运行依赖与实测边界见 [兼容性表](zcode-subscription-proxy/README.md#支持平台和版本)；当前开发机仅能实测 Windows，不能将静态架构校验和模拟测试视为 macOS/Linux 实机验收。Windows 32 位及原生 Windows ARM64 暂不支持。
 
-当前 ZCode 没有面向普通插件的桌面级 AppStart/AppExit 钩子。本插件在 **会话连接 MCP 时** 自动启动代理；不是注册 Windows 开机任务或常驻系统服务，也不承诺只打开 ZCode 空白窗口就启动。MCP 结束或宿主退出时清理其拥有的代理，详见 [生命周期说明](zcode-subscription-proxy/README.md#自动启动与退出清理)。
+MCP `initialize` 只等待本地配置加载，核心校验、下载和代理启动在后台进行，不阻塞握手，也不需要聊天模型、工具调用或已有账号。**MCP 已连接不等于代理已就绪**：下载期间 `bridge_status` 返回 `ready: false` 和 `core.state: "downloading"`；后台完成后自动启动代理，`ready: true` 时可打开管理页授权。下载失败仍保留 MCP，状态中显示原因，可通过 `bridge_start` 或宿主重连重试。`bridge_stop` 会取消本会话的在途准备并持久暂停，重连后也不自动下载或启动，需显式 `bridge_start` 恢复。watchdog 不下载或自动重试下载。
+
+当前 ZCode 没有面向普通插件的桌面级 AppStart/AppExit 钩子，宿主何时连接 MCP 仍需官方证据。本插件只保证 **MCP 进程已被宿主启动后的行为**，不承诺打开 ZCode 空白窗口一定触发，也不注册开机任务或常驻系统服务。MCP 结束或宿主退出时清理其拥有的代理，准备期间的 EOF/取消也会中止准备并清理，详见 [生命周期说明](zcode-subscription-proxy/README.md#自动启动与退出清理)。
+
+核心默认缓存位于 `~/.zcode/zcode-subscription-proxy/data/runtimes/v8.0.38/<platform-arch>/<basename(platforms.json.path)>`。下载使用 HTTPS `curl`，优先使用 `ZCODE_HTTP_PROXY`，否则沿用常见代理变量。后台核心准备保留独立的 **10 分钟（600 秒）**预算，超时只报告核心故障，失败不自动重试；不再使用覆盖下载与启动的 50 秒握手预算，也不依赖增大宿主握手超时。离线可通过 `BRIDGE_BIN` 指向自行准备且可信的当前平台核心，详见 [首次使用与下载说明](zcode-subscription-proxy/README.md#首次使用打开管理网页并授权)。
+
+移除当前源码中的核心文件不会缩小旧 Git 历史：既有提交仍含大文件，完整克隆可能仍下载这些历史对象；本次不自动重写历史。
 
 ## 添加更多插件
 
@@ -61,4 +67,4 @@ sh zcode-subscription-proxy/scripts/prepare-posix-marketplace.sh "$HOME/zcode-su
 
 ## 许可证
 
-仓库原创代码遵循 [MIT License](LICENSE)。随附第三方程序、文档及其依赖按各自许可证分发，保留原版权声明。免责声明不替代或限制适用的第三方许可证，也不排除法律不允许排除的责任。
+仓库原创代码遵循 [MIT License](LICENSE)。按需下载的第三方程序、随附文档及其依赖遵循各自许可证，保留原版权声明。免责声明不替代或限制适用的第三方许可证，也不排除法律不允许排除的责任。

@@ -9,13 +9,15 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { loadConfig, resolveBundledBinaryPath } from "../bridge/config.mjs";
+import { loadConfig } from "../bridge/config.mjs";
+import { resolveCoreBinaryPath } from "../bridge/core-runtime.mjs";
+import { copyTestCore, nativeCoreSkip, testCorePath } from "./helpers/native-core.mjs";
 import { ensureRunning, getStatus, stopBridge, withLifecycleLock, probeBridge } from "../bridge/bridge-process.mjs";
 import { queryPosixSupervisor } from "../bridge/posix-supervisor.mjs";
 
 const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const native = {
-  skip: ["darwin", "linux"].includes(process.platform) ? false : "仅在 macOS/Linux 运行原生桥；Windows 不启动真实桥",
+  skip: ["darwin", "linux"].includes(process.platform) ? nativeCoreSkip : "仅在 macOS/Linux 运行原生桥；Windows 不启动真实桥",
   timeout: 90000,
 };
 
@@ -85,7 +87,7 @@ async function copyRuntime(root) {
   }
 }
 
-async function fixture(t, { bundled = false } = {}) {
+async function fixture(t, { cached = false } = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "posix-bridge-中文 路径-")));
   const clients = [];
   let config;
@@ -99,23 +101,24 @@ async function fixture(t, { bundled = false } = {}) {
     }
     await rm(directory, { recursive: true, force: true });
   });
-  const root = bundled ? join(directory, "plugin copy") : pluginRoot;
-  if (bundled) await copyRuntime(root);
-  const binPath = bundled ? resolveBundledBinaryPath({ pluginRoot: root }) : join(directory, "隔离 核心");
+  const root = cached ? join(directory, "plugin copy") : pluginRoot;
+  if (cached) await copyRuntime(root);
+  const dataDir = join(directory, "数据 data");
+  const binPath = cached ? resolveCoreBinaryPath({ dataDir }) : join(directory, "隔离 核心");
   assertContained(directory, binPath);
   await mkdir(dirname(binPath), { recursive: true });
-  await copyFile(resolveBundledBinaryPath({ pluginRoot }), binPath);
-  await chmod(binPath, bundled ? 0o644 : 0o755);
+  await copyTestCore(binPath);
+  await chmod(binPath, cached ? 0o644 : 0o755);
   const env = {
     ...process.env,
     HOME: join(directory, "home"), USERPROFILE: join(directory, "home"),
     XDG_CONFIG_HOME: join(directory, "xdg-config"), XDG_CACHE_HOME: join(directory, "xdg-cache"),
     XDG_DATA_HOME: join(directory, "xdg-data"),
-    BRIDGE_BIN: binPath, BRIDGE_DATA_DIR: join(directory, "数据 data"),
+    BRIDGE_BIN: binPath, BRIDGE_DATA_DIR: dataDir,
     BRIDGE_HOST: "127.0.0.1", BRIDGE_PORT: String(await unusedPort()),
     BRIDGE_API_KEY: "isolated-posix-test-client-key", BRIDGE_MGMT_KEY: "123456",
   };
-  if (bundled) delete env.BRIDGE_BIN;
+  if (cached) delete env.BRIDGE_BIN;
   config = await loadConfig({ pluginRoot: root, env });
   for (const path of [config.binPath, config.dataDir, config.authDir, config.configPath, config.pidPath]) {
     assertContained(directory, path);
@@ -251,10 +254,13 @@ test("POSIX 隔离原生核心并发 start/status/stop，暂停自动恢复且�
   assert.equal((await getStatus(config)).autoRecoveryPaused, false);
 });
 
-test("POSIX 两个真实 MCP 复用同一实例，非 owner EOF 不关闭桥", native, async (t) => {
+test("POSIX 无账号 MCP 握手后后台自动就绪，两个真实 MCP 复用同一实例且非 owner EOF 不关闭桥", native, async (t) => {
   const f = await fixture(t);
   const owner = await mcpClient(f);
-  assert.equal((await owner.call("bridge_start")).ready, true);
+  await waitUntil(async () => (await getStatus(f.config)).ready, "后台无需工具自动启动", 30000);
+  const status = await getStatus(f.config);
+  assert.equal(status.ready, true, "后台必须自动启动，不能靠 bridge_start 补启动");
+  assert.equal(status.authCount, 0, "不要求先登录账号或提供模型");
   const before = await assertIdentity(f.config);
   const borrower = await mcpClient(f);
   const reused = await borrower.call("bridge_start");
@@ -306,10 +312,16 @@ test("POSIX owner 被强杀后另一 MCP watchdog 恢复，bridge_stop 暂停后
   assert.equal((await probeBridge(f.config)).state, "offline");
   assert.equal(await readPid(f.config), null);
   assert.equal((await borrower.call("bridge_status")).autoRecoveryPaused, true);
-  assert.equal((await borrower.call("bridge_start")).ready, true);
+  await borrower.endInput();
+  const reconnected = await mcpClient(f);
+  assert.equal((await reconnected.call("bridge_status")).autoRecoveryPaused, true,
+    "重连必须允许握手但保留用户暂停，不能自动恢复代理");
+  assert.equal((await probeBridge(f.config)).state, "offline");
+  assert.equal(await readPid(f.config), null);
+  assert.equal((await reconnected.call("bridge_start")).ready, true);
   const resumed = await assertIdentity(f.config);
   assert.notEqual(resumed.creationDate, recovered.creationDate);
-  await borrower.endInput();
+  await reconnected.endInput();
   await assertReleased(f.config, resumed);
 });
 
@@ -398,17 +410,17 @@ test("POSIX 自定义 BRIDGE_BIN 没有执行位时拒绝启动且不修改权�
   assert.equal((await probeBridge(config)).state, "offline");
 });
 
-test("POSIX 默认核心丢失执行位只在隔离源码副本中自动恢复，不修改源核心", native, async (t) => {
-  const source = resolveBundledBinaryPath({ pluginRoot });
-  const sourceMode = (await stat(source)).mode;
-  const f = await fixture(t, { bundled: true });
+test("POSIX 默认缓存核心丢失执行位时只恢复隔离 dataDir 内副本，不修改测试源核心", native, async (t) => {
+  const sourceMode = (await stat(testCorePath)).mode;
+  const f = await fixture(t, { cached: true });
   assert.equal(f.env.BRIDGE_BIN, undefined);
-  assert.notEqual(f.config.binPath, source);
+  assert.equal(f.config.binPath, resolveCoreBinaryPath({ dataDir: f.config.dataDir }));
+  assert.notEqual(f.config.binPath, testCorePath);
   assert.equal((await stat(f.config.binPath)).mode & 0o777, 0o644);
   const client = await mcpClient(f);
-  assert.equal((await client.call("bridge_start")).ready, true);
+  assert.equal((await getStatus(f.config)).ready, true, "默认缓存应在 initialize 前自动校验、恢复执行位并启动");
   assert.equal((await stat(f.config.binPath)).mode & 0o777, 0o755);
-  assert.equal((await stat(source)).mode, sourceMode, "原始随包二进制不得被 chmod");
+  assert.equal((await stat(testCorePath)).mode, sourceMode, "预先准备的测试核心不得被 chmod");
   const record = await assertIdentity(f.config);
   await client.endInput();
   await assertReleased(f.config, record);

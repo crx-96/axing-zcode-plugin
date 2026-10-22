@@ -73,17 +73,10 @@ done
 for source_file in "$plugin_root"/bridge/*.mjs; do
     copy_file "bridge/$(basename "$source_file")"
 done
-for relative in bridge/panel/LICENSE bridge/panel/management.upstream.html bridge/bin/LICENSE bridge/bin/README.md bridge/bin/README_CN.md bridge/bin/config.example.yaml bridge/bin/platforms.json bridge/bin/zcode-plugin-subscription-proxy.exe; do
+# 核心只保留来源清单、原始文档与许可证；即使源码旁仍有旧二进制也不复制。
+# 首次显式 bridge_start 由生产下载器校验并缓存当前平台核心，打包过程不联网。
+for relative in bridge/panel/LICENSE bridge/panel/management.upstream.html bridge/bin/LICENSE bridge/bin/README.md bridge/bin/README_CN.md bridge/bin/config.example.yaml bridge/bin/platforms.json; do
     copy_file "$relative"
-done
-
-# 四个平台二进制逐一复制；缺失即失败回滚，避免交付不可启动的残缺市场。
-# 仅对新副本设置执行位，不依赖源码 checkout 的 chmod，也不修改源文件。
-for platform in darwin-x64 darwin-arm64 linux-x64 linux-arm64; do
-    [ -d "$plugin_root/bridge/bin/$platform" ] && [ ! -L "$plugin_root/bridge/bin/$platform" ] || fail "缺少原生核心目录：$platform"
-    mkdir "$copy_root/bridge/bin/$platform"
-    copy_file "bridge/bin/$platform/zcode-plugin-subscription-proxy"
-    chmod 755 "$copy_root/bridge/bin/$platform/zcode-plugin-subscription-proxy"
 done
 
 # Windows CLI 授权脚本仍作为原项目可选能力保留，不移植为 Unix CLI 助手。

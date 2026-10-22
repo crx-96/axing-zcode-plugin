@@ -4,30 +4,16 @@ import { randomBytes } from "node:crypto";
 import { chmod, link, mkdir, open, readFile, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { getCoreRelease, resolveCoreBinaryPath } from "./core-runtime.mjs";
 
 /** 仅支持此回环地址，不接受 localhost、IPv6 或任意网络接口。 */
 export const DEFAULT_HOST = "127.0.0.1";
 /** 默认 HTTP 端口，避开旧桥 8787 与普通 CLIProxyAPI 8317；环境变量仍须为合法十进制端口。 */
 export const DEFAULT_PORT = 18787;
 /** 与插件 manifest 保持一致；版本升级不改变专属数据目录。 */
-export const PLUGIN_VERSION = "0.1.1";
+export const PLUGIN_VERSION = "0.2.2";
 /** 用户指定的公共管理密码，仅限回环管理接口；不能用作客户端 API 密钥。 */
 const DEFAULT_MGMT_KEY = "123456";
-
-// 映射随模块加载，不依赖传入的安装路径存在；配置检查不读取或修改核心本身。
-const BUNDLED_BINARIES = JSON.parse(await readFile(new URL("./bin/platforms.json", import.meta.url), "utf-8")).platforms;
-
-/** 只选择随包核心路径；BRIDGE_BIN 不能让未实现生命周期支持的平台被视为可用。 */
-export function resolveBundledBinaryPath({ pluginRoot, platform = process.platform, arch = process.arch }) {
-  requireString(pluginRoot, "pluginRoot");
-  requireString(platform, "platform");
-  requireString(arch, "arch");
-  const key = `${platform}-${arch}`;
-  if (!Object.hasOwn(BUNDLED_BINARIES, key)) {
-    throw new Error(`不支持的平台/架构 ${platform}/${arch}；仅支持 Windows x64、macOS x64/arm64、Linux x64/arm64，BRIDGE_BIN 不能扩展平台支持。`);
-  }
-  return resolve(pluginRoot, "bridge", "bin", BUNDLED_BINARIES[key].path);
-}
 
 /** 校验非空字符串；错误只包含固定字段名，不回显用户值。 */
 function requireString(value, name) {
@@ -123,7 +109,7 @@ export async function loadConfig({ pluginRoot, env = process.env, platform = pro
     throw new Error("env 必须是环境变量对象。");
   }
   // 在任何文件写入之前验证全部输入；覆盖核心路径也不能绕过平台/架构支持检查。
-  const bundledBinPath = resolveBundledBinaryPath({ pluginRoot, platform, arch });
+  const core = getCoreRelease({ platform, arch });
   const bin = envString(env, "BRIDGE_BIN");
   const data = envString(env, "BRIDGE_DATA_DIR");
   const host = envString(env, "BRIDGE_HOST") ?? DEFAULT_HOST;
@@ -138,8 +124,10 @@ export async function loadConfig({ pluginRoot, env = process.env, platform = pro
   const dataDir = resolve(data ?? join(homedir(), ".zcode", "zcode-subscription-proxy", "data"));
   const secrets = await loadSecrets(dataDir);
   const config = {
-    /** 插件专属桥可执行文件的绝对路径，不默认复用普通 CLIProxyAPI。 */
-    binPath: resolve(bin ?? bundledBinPath),
+    /** 默认核心位于稳定缓存；BRIDGE_BIN 只覆盖路径，不隐式下载或替换自定义程序。 */
+    binPath: bin ? resolve(bin) : resolveCoreBinaryPath({ dataDir, platform, arch }),
+    /** 固定版本的当前平台下载清单；null 表示自定义核心，不归下载器管理。 */
+    core: bin ? null : core,
     /** 插件专属稳定运行数据目录，绝对路径；升级保留已有授权。 */
     dataDir,
     /** 桥进程读取的 v8 YAML 文件。 */

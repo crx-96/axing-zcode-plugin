@@ -11,10 +11,10 @@ import {
   DEFAULT_PORT,
   PLUGIN_VERSION,
   loadConfig,
-  resolveBundledBinaryPath,
   renderConfigYaml,
   validateExistingConfig,
 } from "../bridge/config.mjs";
+import { resolveCoreBinaryPath } from "../bridge/core-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 const moduleUrl = new URL("../bridge/config.mjs", import.meta.url).href;
@@ -42,7 +42,7 @@ test("默认数据目录跨安装版本稳定保留授权，隔离旧桥且不�
     import { join } from "node:path";
     import { loadConfig, PLUGIN_VERSION } from ${JSON.stringify(moduleUrl)};
     assert.equal(homedir(), ${JSON.stringify(root)});
-    assert.equal(PLUGIN_VERSION, "0.1.1");
+    assert.equal(PLUGIN_VERSION, "0.2.2");
     const oldDir = join(homedir(), ".zcode", "subscription-bridge", "v0.0.2", "data");
     await mkdir(join(oldDir, "auths"), { recursive: true });
     await writeFile(join(oldDir, "launcher-secrets.json"), JSON.stringify({ apiKey: "old-plugin-api", mgmtKey: "old-management" }));
@@ -68,14 +68,26 @@ test("默认数据目录跨安装版本稳定保留授权，隔离旧桥且不�
   assert.equal(result.stderr, "");
 });
 
+test("插件、市场和 MCP 对外版本保持一致", async () => {
+  const manifest = JSON.parse(await readFile(join(pluginRoot, ".zcode-plugin", "plugin.json"), "utf8"));
+  const marketplace = JSON.parse(await readFile(join(pluginRoot, "..", ".claude-plugin", "marketplace.json"), "utf8"));
+  const listing = marketplace.plugins.find((plugin) => plugin.name === manifest.name);
+  assert.ok(listing);
+  assert.equal(PLUGIN_VERSION, "0.2.2");
+  assert.equal(manifest.version, PLUGIN_VERSION);
+  assert.equal(listing.version, PLUGIN_VERSION);
+  assert.equal(resolve(pluginRoot, "..", listing.source), pluginRoot);
+});
+
 test("路径与派生地址符合接口，相对 bin/data 路径解析为绝对路径", async (t) => {
   const { root, load } = await fixture(t);
   const config = await load();
-  assert.equal(PLUGIN_VERSION, "0.1.1");
+  assert.equal(PLUGIN_VERSION, "0.2.2");
   assert.equal(config.host, DEFAULT_HOST);
   assert.equal(config.port, DEFAULT_PORT);
   assert.equal(DEFAULT_PORT, 18787);
-  assert.equal(config.binPath, resolveBundledBinaryPath({ pluginRoot }));
+  assert.equal(config.binPath, resolveCoreBinaryPath({ dataDir: config.dataDir }));
+  assert.equal(config.core.key, `${process.platform}-${process.arch}`);
   assert.equal(config.dataDir, join(root, "data"));
   assert.equal(config.endpoint, "http://127.0.0.1:18787/v1");
   assert.equal(config.managementUrl, "http://127.0.0.1:18787/management.html");
@@ -94,7 +106,7 @@ test("路径与派生地址符合接口，相对 bin/data 路径解析为绝对�
   assert.equal(custom.endpoint, "http://127.0.0.1:9001/v1");
 });
 
-test("平台/架构显式选择五种随附核心，Windows 原路径与高级 BRIDGE_BIN 覆盖保持兼容", async (t) => {
+test("平台/架构只选择当前平台缓存路径，BRIDGE_BIN 显式禁用自动下载", async (t) => {
   const { root, env } = await fixture(t);
   for (const [platform, arch, path] of [
     ["win32", "x64", "zcode-plugin-subscription-proxy.exe"],
@@ -104,12 +116,16 @@ test("平台/架构显式选择五种随附核心，Windows 原路径与高级 B
     ["linux", "arm64", "linux-arm64/zcode-plugin-subscription-proxy"],
   ]) {
     const config = await loadConfig({ pluginRoot, env, platform, arch });
-    assert.equal(config.binPath, join(pluginRoot, "bridge", "bin", path));
+    assert.equal(config.binPath, join(config.dataDir, "runtimes", "v8.0.38", `${platform}-${arch}`, path.split("/").at(-1)));
+    assert.equal(config.core.key, `${platform}-${arch}`);
+    assert.equal(config.core.version, "v8.0.38");
     for (const bin of [join(root, "自定义 core"), relative(process.cwd(), join(root, "relative core"))]) {
       const custom = await loadConfig({ pluginRoot, env: { ...env, BRIDGE_BIN: bin }, platform, arch });
       assert.equal(custom.binPath, resolve(bin));
+      assert.equal(custom.core, null);
     }
-    assert.equal(resolveBundledBinaryPath({ pluginRoot: relative(process.cwd(), pluginRoot) || ".", platform, arch }), config.binPath);
+    const upgraded = await loadConfig({ pluginRoot: join(root, "other-install"), env, platform, arch });
+    assert.equal(upgraded.binPath, config.binPath);
   }
 });
 
@@ -139,7 +155,7 @@ test("不支持的平台/架构在任何写入前失败，BRIDGE_BIN 不得绕�
 test("配置解析不检查、执行或修复核心文件权限", async (t) => {
   const { root, env } = await fixture(t);
   const installedRoot = join(root, "isolated-plugin");
-  const path = resolveBundledBinaryPath({ pluginRoot: installedRoot, platform: "linux", arch: "x64" });
+  const path = resolveCoreBinaryPath({ dataDir: env.BRIDGE_DATA_DIR, platform: "linux", arch: "x64" });
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, "not-an-executable", { mode: 0o600 });
   const before = await stat(path);

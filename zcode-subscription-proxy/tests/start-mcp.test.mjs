@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, writeFile, rm, access, copyFile, readFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, writeFile, rm, access, readFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { loadConfig } from "../bridge/config.mjs";
+import { copyTestCore, nativeCoreSkip } from "./helpers/native-core.mjs";
 import { processIdentity, probeBridge } from "../bridge/bridge-process.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -19,6 +20,7 @@ const systemRoot = process.env.SystemRoot || "C:\\Windows";
 const powerShell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 const execFileAsync = promisify(execFile);
 const windowsOnly = process.platform !== "win32" ? "启动器仅支持 Windows" : false;
+const nativeWindowsOnly = windowsOnly || nativeCoreSkip;
 
 async function waitUntil(check, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
@@ -55,12 +57,12 @@ async function terminateCapturedProcess(identity) {
   await powerShellJson(`$ErrorActionPreference='Stop'; $e=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json; $p=Get-Process -Id $e.pid -ErrorAction SilentlyContinue; if(-not $p){'true'; exit}; $null=$p.Handle; $c=Get-CimInstance Win32_Process -Filter ('ProcessId = '+$e.pid); if(-not $c){'true'; exit}; if($c.ExecutablePath -ne $e.executablePath -or $c.CommandLine -ne $e.commandLine -or $c.CreationDate.ToUniversalTime().ToString('o') -ne $e.creationDate){throw 'Refuse to terminate unrelated process'}; $p.Kill(); if(-not $p.WaitForExit(5000)){throw 'Test process did not exit'}; 'true'`);
 }
 
-async function launcherSession(t, runtime, { noNodePath = false, killWrapper = false } = {}) {
+async function launcherSession(t, runtime, { noNodePath = false, killWrapper = false, startupFailure } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "subscription-launcher-中文 空格-"));
   const harnessPath = join(directory, "启动器 harness.mjs");
   const env = {
     ...process.env, BRIDGE_DATA_DIR: join(directory, "隔离 data"), BRIDGE_BIN: join(directory, "never-start.exe"),
-    BRIDGE_PORT: "invalid", BRIDGE_HOST: "127.0.0.1", BRIDGE_MGMT_KEY: "123456",
+    BRIDGE_HOST: "127.0.0.1", BRIDGE_MGMT_KEY: "123456",
     BRIDGE_API_KEY: "launcher-test-secret-do-not-return",
   };
   if (noNodePath) {
@@ -71,17 +73,23 @@ async function launcherSession(t, runtime, { noNodePath = false, killWrapper = f
   let config;
   let serverIdentity;
   let bridgeIdentity;
+  const listener = createServer();
+  listener.listen(0, "127.0.0.1");
+  await once(listener, "listening");
+  const port = listener.address().port;
+  await new Promise((resolve) => listener.close(resolve));
+  assert.ok(![8787, 18787].includes(port));
+  env.BRIDGE_PORT = startupFailure === "invalid-config" ? "invalid" : String(port);
   if (killWrapper) {
-    const listener = createServer();
-    listener.listen(0, "127.0.0.1");
-    await once(listener, "listening");
-    const port = listener.address().port;
-    await new Promise((resolve) => listener.close(resolve));
-    assert.ok(![8787, 18787].includes(port));
-    env.BRIDGE_PORT = String(port);
     env.BRIDGE_BIN = join(directory, "隔离 订阅代理.exe");
-    await copyFile(join(root, "bridge", "bin", "zcode-plugin-subscription-proxy.exe"), env.BRIDGE_BIN);
+    await copyTestCore(env.BRIDGE_BIN);
     config = await loadConfig({ pluginRoot: root, env });
+  } else if (!startupFailure || startupFailure === "missing-paused") {
+    // 暂停期间不准备或执行核心；同时覆盖可用和缺失的自定义文件。
+    if (!startupFailure) await copyFile(process.execPath, env.BRIDGE_BIN);
+    config = await loadConfig({ pluginRoot: root, env });
+    await mkdir(config.dataDir, { recursive: true });
+    await writeFile(config.pausedPath, "Test keeps bridge paused\n");
   }
   await writeFile(harnessPath, `import {spawn} from 'node:child_process';
 const hold=${killWrapper} ? setInterval(()=>{},1000) : null;
@@ -103,7 +111,12 @@ child.on('exit',(code)=>{process.exitCode=code ?? 1;if(hold)process.stdin.resume
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.on("error", (error) => { failure = error; });
-  child.stdin.on("error", (error) => { failure = error; });
+  child.stdin.on("error", (error) => {
+    if (!startupFailure || !["EPIPE", "ERR_STREAM_DESTROYED"].includes(error.code)) failure = error;
+  });
+  child.once("close", () => {
+    for (const finish of [...waiters.values()]) finish(null);
+  });
   child.stderr.on("data", (chunk) => {
     errors += chunk;
     const firstLine = errors.split("\n", 1)[0];
@@ -135,37 +148,91 @@ child.on('exit',(code)=>{process.exitCode=code ?? 1;if(hold)process.stdin.resume
     }
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
-  async function request(id, method, params) {
+  async function request(id, method, params, { allowStartupFailure = false } = {}) {
     const pending = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { waiters.delete(id); reject(failure || new Error(`启动器 ${method} 超时；${errors}`)); }, 15000);
-      waiters.set(id, (response) => { clearTimeout(timer); waiters.delete(id); resolve(response); });
+      const timer = setTimeout(() => { waiters.delete(id); reject(failure || new Error(`启动器 ${method} 超时；${errors}`)); }, 20000);
+      const finish = (response) => { clearTimeout(timer); waiters.delete(id); resolve(response); };
+      waiters.set(id, finish);
+      if (child.exitCode !== null || child.signalCode !== null) finish(null);
     });
-    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    if (child.exitCode === null && child.signalCode === null) {
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    }
     const response = await pending;
     if (failure) throw failure;
+    if (allowStartupFailure) return response;
+    assert.ok(response, `MCP 在 ${method} 响应前退出：${errors}`);
     assert.equal(response.error, undefined);
     return response.result;
   }
-  const initialized = await request("中文握手", "initialize", {
+  const initializeParams = {
     protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "中文测试客户端", version: "1" },
-  });
-  assert.equal(initialized.serverInfo.version, "0.1.1");
+  };
+  if (startupFailure === "invalid-config") {
+    const initialized = await request("中文握手", "initialize", initializeParams, { allowStartupFailure: true });
+    child.stdin.end();
+    await waitUntil(() => child.exitCode !== null || child.signalCode !== null);
+    await waitUntil(() => child.stdout.readableEnded && child.stderr.readableEnded);
+    assert.notEqual(child.exitCode, 0, "准备失败必须由实际 PowerShell 启动链非零退出");
+    assert.equal(child.signalCode, null);
+    if (failure) throw failure;
+    assert.equal(responses.some((response) => response.result?.serverInfo), false, "失败不能先报告握手成功");
+    if (initialized) {
+      assert.equal(initialized.id, "中文握手");
+      assert.equal(initialized.result, undefined);
+      assert.ok(Number.isInteger(initialized.error?.code));
+      assert.equal(typeof initialized.error.message, "string");
+    }
+    assert.equal(harness?.harness, true);
+    assert.equal(buffer, "");
+    const diagnostics = errors.trim().split(/\r?\n/).slice(1).join("\n");
+    assert.ok(diagnostics.trim(), "快速配置失败至少写出安全 stderr 摘要");
+    assert.doesNotMatch(JSON.stringify(responses) + diagnostics, /launcher-test-secret-do-not-return|Error:|\bat .*\(|Bearer |https?:\/\//);
+    assert.equal(diagnostics.includes(directory), false, "安全摘要不得暴露测试目录或二进制路径");
+    if (config) {
+      assert.equal((await probeBridge(config)).state, "offline");
+      await assert.rejects(access(config.pidPath), { code: "ENOENT" });
+      assert.equal(await readFile(config.pausedPath, "utf8"), "Test keeps bridge paused\n");
+    }
+    if (startupFailure === "invalid-config") await assert.rejects(access(env.BRIDGE_DATA_DIR), { code: "ENOENT" });
+    return;
+  }
+  const initialized = await request("中文握手", "initialize", initializeParams);
+  assert.equal(initialized.serverInfo.version, "0.2.2");
   assert.equal(initialized.protocolVersion, "2025-06-18");
   assert.deepEqual(await request("中文往返-引号\"-反斜杠\\", "ping"), {});
   const tools = await request("工具清单", "tools/list");
   assert.equal(tools.tools.length, 4);
   assert.match(tools.tools.find((tool) => tool.name === "bridge_generate_image").description, /图片/);
   if (killWrapper) {
-    const started = await request("启动隔离代理", "tools/call", { name: "bridge_start", arguments: {} });
-    assert.notEqual(started.isError, true, JSON.stringify(started));
-    assert.equal(JSON.parse(started.content[0].text).ready, true);
+    await waitUntil(async () => {
+      const status = await request("后台自动启动", "tools/call", { name: "bridge_status", arguments: {} });
+      assert.notEqual(status.isError, true, JSON.stringify(status));
+      return JSON.parse(status.content[0].text).ready;
+    }, 30000);
     bridgeIdentity = JSON.parse(await readFile(config.pidPath, "utf8"));
+  } else if (startupFailure === "missing-core") {
+    await waitUntil(async () => {
+      const status = await request("核心缺失", "tools/call", { name: "bridge_status" });
+      const failed = JSON.parse(status.content[0].text);
+      assert.equal(failed.ready, false);
+      return Boolean(failed.startupError);
+    });
+    assert.deepEqual(await request("失败后仍存活", "ping"), {});
   } else {
+    const status = await request("保持主动暂停", "tools/call", { name: "bridge_status", arguments: {} });
+    assert.notEqual(status.isError, true, JSON.stringify(status));
+    const paused = JSON.parse(status.content[0].text);
+    assert.equal(paused.ready, false);
+    assert.equal(paused.autoRecoveryPaused, true);
+    assert.equal(paused.startupError, undefined, "主动暂停不是初始化故障");
     const generated = await request("中文参数", "tools/call", {
       name: "bridge_generate_image", arguments: { prompt: "画一只红色小猫，招牌写\"你好\"。\n路径字符 C:\\隔离\\图片" },
     });
-    assert.equal(generated.isError, true, "隔离的错误配置必须拒绝实际图片请求");
-    assert.match(generated.content[0].text, /配置不可用/);
+    assert.equal(generated.isError, true, "暂停代理必须拒绝实际图片请求");
+    assert.match(generated.content[0].text, /未就绪/);
+    assert.equal((await probeBridge(config)).state, "offline");
+    await assert.rejects(access(config.pidPath), { code: "ENOENT" });
   }
   assert.doesNotMatch(JSON.stringify(responses) + errors, /launcher-test-secret-do-not-return/);
   assert.equal(buffer, "");
@@ -209,16 +276,27 @@ child.on('exit',(code)=>{process.exitCode=code ?? 1;if(hold)process.stdin.resume
     assert.equal(child.exitCode, 0, errors);
     assert.equal(child.signalCode, null);
   }
-  assert.equal(errors.trim().split("\n").length, 1, "stderr 除测试harness元信息外不得有启动器或协议错误");
+  if (startupFailure === "missing-core") assert.match(errors, /BRIDGE_BIN 不存在或没有执行权限/);
+  else assert.equal(errors.trim().split("\n").length, 1, "stderr 除测试harness元信息外不得有启动器或协议错误");
   assert.equal(buffer, "");
-  if (!killWrapper) await assert.rejects(access(env.BRIDGE_DATA_DIR), { code: "ENOENT" });
+  if (!killWrapper && startupFailure !== "missing-core") {
+    assert.equal(await readFile(config.pausedPath, "utf8"), "Test keeps bridge paused\n");
+    await assert.rejects(access(config.pidPath), { code: "ENOENT" });
+    await assert.rejects(access(config.configPath), { code: "ENOENT" });
+  }
 }
 
-test("真实 PowerShell 启动器透传中文 JSON-RPC、工具参数与 EOF", { skip: windowsOnly, timeout: 45000 }, async (t) => {
+test("真实 PowerShell 启动器在持久暂停下透传中文 JSON-RPC、工具参数与 EOF，不执行核心", { skip: windowsOnly, timeout: 45000 }, async (t) => {
   await launcherSession(t, process.execPath);
 });
 
-test("父宿主 stdin 保持打开时强杀 PowerShell 包装器，Job 回收 MCP、代理与 supervisor", { skip: windowsOnly, timeout: 60000 }, async (t) => {
+for (const startupFailure of ["invalid-config", "missing-core", "missing-paused"]) {
+  test(`真实 PowerShell 启动器 ${startupFailure} 区分配置连接失败和后台核心故障，不泄露密钥`, { skip: windowsOnly, timeout: 45000 }, async (t) => {
+    await launcherSession(t, process.execPath, { startupFailure });
+  });
+}
+
+test("父宿主 stdin 保持打开时强杀 PowerShell 包装器，Job 回收 MCP、代理与 supervisor", { skip: nativeWindowsOnly, timeout: 60000 }, async (t) => {
   await launcherSession(t, process.execPath, { killWrapper: true });
 });
 
