@@ -1,0 +1,16 @@
+# 本机授权、密钥和运行产物不得进入插件市场。
+**/data/
+**/auths/
+**/generated/
+**/launcher-secrets.json
+**/config.yaml
+**/*.pid
+**/*.paused
+**/*.log
+**/*.tmp
+node_modules/
+coverage/
+.zcode/
+.codegraph/
+docs/status/
+docs/plans/

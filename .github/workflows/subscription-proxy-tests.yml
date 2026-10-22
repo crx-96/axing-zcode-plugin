@@ -1,0 +1,36 @@
+name: Subscription proxy platforms
+
+on:
+  push:
+    paths:
+      - "zcode-subscription-proxy/**"
+      - ".claude-plugin/marketplace.json"
+      - ".gitattributes"
+      - ".github/workflows/subscription-proxy-tests.yml"
+  pull_request:
+    paths:
+      - "zcode-subscription-proxy/**"
+      - ".claude-plugin/marketplace.json"
+      - ".gitattributes"
+      - ".github/workflows/subscription-proxy-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test isolated proxy and MCP lifecycle
+        shell: bash
+        run: node --test --test-concurrency=1 zcode-subscription-proxy/tests/*.test.mjs
