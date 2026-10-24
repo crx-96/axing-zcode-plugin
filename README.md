@@ -1,4 +1,4 @@
-# 阿星的 ZCode 插件集合
+# 阿兴的 ZCode 插件集合
 
 一个可添加到 ZCode 的插件市场。各插件独立放在仓库根目录，市场清单位于 [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json)。
 
