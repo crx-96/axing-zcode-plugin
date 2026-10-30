@@ -6,7 +6,7 @@
 
 | 插件 | 版本 | 平台 | 说明 |
 | --- | --- | --- | --- |
-| [zcode订阅代理](zcode-subscription-proxy/README.md) | 0.2.5 | Windows x64；macOS / Linux x64、ARM64 | 基于 CLIProxyAPI 的本地订阅授权、OpenAI 兼容 API 与图片生成；macOS/Linux 先准备 POSIX 本地市场 |
+| [zcode订阅代理](zcode-subscription-proxy/README.md) | 0.2.6 | Windows x64；macOS / Linux x64、ARM64 | 基于 CLIProxyAPI 的本地订阅授权、OpenAI 兼容 API 与图片生成；macOS/Linux 先准备 POSIX 本地市场 |
 
 使用前请阅读 [免责声明](zcode-subscription-proxy/DISCLAIMER.md) 和 [第三方软件说明](zcode-subscription-proxy/THIRD_PARTY_NOTICES.md)。本仓库不是 ZCode、CLIProxyAPI 或模型服务商的官方项目。
 
@@ -38,7 +38,7 @@ sh zcode-subscription-proxy/scripts/prepare-posix-marketplace.sh "$HOME/zcode-su
 
 ### 安装及更新
 
-1. 添加后进入 **个人 → axing-zcode-plugins**，找到 **zcode订阅代理**，确认版本 `0.2.5`，点击 **安装**。
+1. 添加后进入 **个人 → axing-zcode-plugins**，找到 **zcode订阅代理**，确认版本 `0.2.6`，点击 **安装**。
 2. 在 **设置 → 插件** 检查插件已启用，并在宿主 MCP 设置中连接/重连插件。宿主拉起 MCP 进程后会自动准备核心、启动代理，无需先配置聊天模型或让 AI 调用工具。
 3. MCP 初始化成功后，继续等待后台核心准备和代理启动完成，再按 [插件使用指南](zcode-subscription-proxy/README.md) 打开本机管理网页、登录并配置模型；曾调用 `bridge_stop` 主动暂停的需显式恢复。
 4. 更新时进入插件市场齿轮菜单的 **市场源**，刷新该市场，再进入插件详情点击 **更新**。仅刷新市场不会自动替换已安装插件。更新后新建任务或重连 MCP。
@@ -47,7 +47,7 @@ sh zcode-subscription-proxy/scripts/prepare-posix-marketplace.sh "$HOME/zcode-su
 
 ## 平台与启动边界
 
-`0.2.5` 支持 Windows x64、macOS Intel / Apple Silicon、Linux x64 / ARM64，但分发包不再包含五平台 CLIProxyAPI 二进制。**宿主拉起插件 MCP 进程就会自动准备当前平台核心**：缺少有效缓存时只下载固定 `v8.0.47` 的当前平台核心，校验归档及二进制 SHA256 后缓存；平台清单、来源文档和许可证仍保留。Windows 保持原安装方式，macOS/Linux 使用上面的 POSIX 本地市场。具体运行依赖与实测边界见 [兼容性表](zcode-subscription-proxy/README.md#支持平台和版本)；当前开发机仅能实测 Windows，不能将静态架构校验和模拟测试视为 macOS/Linux 实机验收。Windows 32 位及原生 Windows ARM64 暂不支持。
+`0.2.6` 支持 Windows x64、macOS Intel / Apple Silicon、Linux x64 / ARM64，但分发包不再包含五平台 CLIProxyAPI 二进制。**宿主拉起插件 MCP 进程就会自动准备当前平台核心**：缺少有效缓存时只下载固定 `v8.0.47` 的当前平台核心，校验归档及二进制 SHA256 后缓存；平台清单、来源文档和许可证仍保留。Windows 保持原安装方式，macOS/Linux 使用上面的 POSIX 本地市场。具体运行依赖与实测边界见 [兼容性表](zcode-subscription-proxy/README.md#支持平台和版本)；当前开发机仅能实测 Windows，不能将静态架构校验和模拟测试视为 macOS/Linux 实机验收。Windows 32 位及原生 Windows ARM64 暂不支持。
 
 MCP `initialize` 只等待本地配置加载，核心校验、下载和代理启动在后台进行，不阻塞握手，也不需要聊天模型、工具调用或已有账号。**MCP 已连接不等于代理已就绪**：下载期间 `bridge_status` 返回 `ready: false` 和 `core.state: "downloading"`；后台完成后自动启动代理，`ready: true` 时可打开管理页授权。下载失败仍保留 MCP，状态中显示原因，可通过 `bridge_start` 或宿主重连重试。`bridge_stop` 会取消本会话的在途准备并持久暂停，重连后也不自动下载或启动，需显式 `bridge_start` 恢复。watchdog 不下载或自动重试下载。
 

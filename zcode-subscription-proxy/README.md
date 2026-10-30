@@ -1,4 +1,4 @@
-# zcode订阅代理 · 0.2.5
+# zcode订阅代理 · 0.2.6
 
 基于 **[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** 的 ZCode 第三方插件，将本人合法授权的订阅接入本机 OpenAI 兼容 API，并提供状态、启停和图片生成 MCP 工具。它不是 ZCode、CLIProxyAPI、OpenAI 或 Google 官方产品，也不赠送订阅、额度或账号权限。
 
@@ -6,7 +6,7 @@
 
 ## 支持平台和版本
 
-| 项目 | 0.2.5 的范围 |
+| 项目 | 0.2.6 的范围 |
 | --- | --- |
 | Windows | Windows 10 **22H2 x64** / Windows 11 **x64**；保留 PowerShell 5.1、.NET Framework 和 Job Object 托管。Windows 10 是兼容目标，尚未单独验收 |
 | macOS | Intel x64 / Apple Silicon ARM64；使用 POSIX 本地市场、系统 `/bin/sh`、ZCode 内置运行时或已有 Node 22+。具体最低系统版本取决于 ZCode 与上游核心，尚未实机确定 |
@@ -23,7 +23,7 @@
 
 ## 安装
 
-**Windows**：按 [仓库市场安装说明](../README.md#添加市场与安装) 添加整个仓库，再安装 **zcode订阅代理 0.2.5**。
+**Windows**：按 [仓库市场安装说明](../README.md#添加市场与安装) 添加整个仓库，再安装 **zcode订阅代理 0.2.6**。
 
 **macOS / Linux**：当前宿主不能在同一 MCP 清单内按平台选择命令，默认清单仍为 Windows 入口。先下载完整仓库，在仓库根目录执行：
 
@@ -31,7 +31,7 @@
 sh zcode-subscription-proxy/scripts/prepare-posix-marketplace.sh "$HOME/zcode-subscription-marketplace"
 ```
 
-将输出的新目录（不是插件子目录）添加到插件市场，再安装 `0.2.5`。脚本不需要 Node/npm，不修改原始源码、安装缓存或用户设置；只创建新的本地分发副本，已存在的目标不会覆盖。更新时从新源码生成新目标，再在市场源管理中使用该副本；同名市场不应同时绑定不同来源。默认 GitHub 市场入口目前只适用于 Windows。
+将输出的新目录（不是插件子目录）添加到插件市场，再安装 `0.2.6`。脚本不需要 Node/npm，不修改原始源码、安装缓存或用户设置；只创建新的本地分发副本，已存在的目标不会覆盖。更新时从新源码生成新目标，再在市场源管理中使用该副本；同名市场不应同时绑定不同来源。默认 GitHub 市场入口目前只适用于 Windows。
 
 POSIX 启动器优先从当前 ZCode 祖先进程发现可用内置运行时，随后尝试已有 Node 和常见 ZCode 安装位置；每个候选均验证 Node 22+ 后再运行 MCP。缺失时明确报错，不安装全局工具。管理网页授权、API 和图片保存不依赖 PowerShell；`.cmd` 授权助手仅为 Windows 的可选备用方式。
 
@@ -89,7 +89,7 @@ listen ...:51121: bind: An attempt was made to access a socket in a way forbidde
 
 ### 网页授权：不再依赖回调端口
 
-**0.2.5** 沿用已有的 Antigravity 网页修复：授权请求使用 `is_webui=false`；Codex、Claude 等其他服务商流程不变。三种系统均使用同一管理页与手动回填流程。仍使用原管理页按钮和回调表单，不需要命令行，也不会监听 `51121`。
+**0.2.6** 沿用已有的 Antigravity 网页修复：授权请求使用 `is_webui=false`；Codex、Claude 等其他服务商流程不变。三种系统均使用同一管理页与手动回填流程。仍使用原管理页按钮和回调表单，不需要命令行，也不会监听 `51121`。
 
 1. 打开管理页，进入 **OAuth 登录 → Antigravity**，开始授权并点击 **打开链接**。
 2. 在 Google 页面由本人完成登录和同意授权。
@@ -99,7 +99,7 @@ listen ...:51121: bind: An attempt was made to access a socket in a way forbidde
 
 这解决了生成授权链接时的回调服务启动失败，但不是全自动回跳；账号授权仍需手动复制一次 URL。Google 网络、地区和账号权限错误不会被该补丁绕过。
 
-**已有 0.0.1 / 0.1.0 / 0.1.1 / 0.2.0 / 0.2.1 / 0.2.2 / 0.2.3 / 0.2.4 安装的更新方式**：先在没有进行中请求时调用 `bridge_stop`，刷新指向新源码的市场，再进入插件详情点击 **更新**，确认版本 `0.2.5`。关闭旧任务或断开旧 MCP，更新后新建任务并调用 `bridge_start` 解除暂停。不要删除数据目录，已有 API Key 与授权会保留。没有发布到 GitHub 的源码变更，应使用本地目录市场，不会自动出现在 GitHub 市场。
+**已有 0.0.1 / 0.1.0 / 0.1.1 / 0.2.0 / 0.2.1 / 0.2.2 / 0.2.3 / 0.2.4 / 0.2.5 安装的更新方式**：先在没有进行中请求时调用 `bridge_stop`，刷新指向新源码的市场，再进入插件详情点击 **更新**，确认版本 `0.2.6`。关闭旧任务或断开旧 MCP，更新后新建任务并调用 `bridge_start` 解除暂停。不要删除数据目录，已有 API Key 与授权会保留。没有发布到 GitHub 的源码变更，应使用本地目录市场，不会自动出现在 GitHub 市场。
 
 ### 不改系统端口的命令行授权助手（备用）
 
@@ -149,9 +149,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\antigravity-lo
 | `bridge_stop` | 停止可确认归属的代理，取消本会话在途准备，并持久暂停自动恢复 |
 | `bridge_generate_image` | 用已授权订阅生成一张图片；可能消耗额度或产生费用 |
 
-`0.2.5` 在 MCP 初始化说明和工具描述中同步声明：当前聊天主模型为 GPT（包括 Codex 订阅），且用户未指定生图工具或通道时，优先使用本插件的 `bridge_generate_image`；用户明确指定的工具优先。非 GPT 会话不按此规则改道，不按图片模型倒推聊天模型；仅适用于文生图，不支持参考图编辑。工具不可用或生成失败时说明原因，不擅自换通道、换模型或重试。此处是工具选择指引，实际选择仍受宿主指令、工具权限和聊天模型行为影响。
+`0.2.6` 在 MCP 初始化说明和工具描述中同步声明：按**当前聊天主模型**选择生图方式。用户未指定生图工具或通道时，GPT/Codex 和 Gemini 会话优先使用本插件的 `bridge_generate_image`；未指定图片模型时，GPT/Codex 显式传入 `model=gpt-image-2.5`，Gemini 显式传入 `model=gemini-3.1-flash-image`。用户明确指定的工具、通道或图片模型优先；其他主模型或主模型未知时不按此规则改道，不按图片模型倒推聊天主模型。仅适用于文生图，不支持参考图编辑；工具不可用或生成失败时说明原因，不擅自换通道、换模型或重试。此处是工具选择指引，实际选择仍受宿主指令、工具权限和聊天模型行为影响。
 
-图片示例：**“调用 zcode订阅代理的 bridge_generate_image，用 gpt-image-2.5 生成一张白底绿色三角形。”**
+图片示例：**“调用 zcode订阅代理的 bridge_generate_image，用 gpt-image-2.5 生成一张白底绿色三角形。”** Gemini 示例：“调用同一工具，显式传入 `model=gemini-3.1-flash-image`，生成一张白底绿色三角形。”
+
+**插件无法从 MCP 请求读取当前聊天主模型，Gemini 调用必须显式传入 `model=gemini-3.1-flash-image`；省略 `model` 时仍默认 `gpt-image-2.5`，不会自动识别并切换为 Gemini。** Gemini 使用原生 `/v1beta/models/gemini-3.1-flash-image:generateContent` 接口；`size` 的三个明确尺寸依次映射到 1K 的 `1:1`、`3:2`、`2:3` 比例，不保证精确像素，省略或 `auto` 由上游决定。Gemini 的 `quality`、`background` 仅允许省略或 `auto`；`output_format` 仅允许省略或默认 `png`，不向上游要求编码、不转码，按响应实际 PNG/JPEG/WebP 格式保存。缺图、多图、损坏图片或 MIME 与编码不一致时报告失败，不自动回退 GPT。
 
 支持 `prompt`、`model`、`size`、`quality`、`background`、`output_format`。默认图片模型 `gpt-image-2.5`，可指定账号实际支持的模型；本 MCP 不自动换模型或重新提交请求，也不改变聊天主模型。**CLIProxyAPI 核心仍可能按配置轮换凭据、刷新授权并重试；单次 MCP 调用不保证上游只执行一次或只消耗一次额度。**仅文生图，每次一张，不接收参考图路径或 URL。原图保存在数据目录 `generated/`，小图可直接预览；Windows 的较大 PNG/JPEG 附带小预览，macOS/Linux 的大图和大 WebP 返回原图本地链接，不依赖额外图像工具。原图不会被压缩替换。保存前检查 PNG、常见 Huffman DCT JPEG（含渐进式）和静态 WebP 的结构及尺寸，像素上限为 4000 万；不支持动画 WebP，也不将结构检查等同于完整像素解码。上游不一定严格遵守请求尺寸和质量参数。
 
@@ -207,7 +209,7 @@ Windows 文件实际访问权限由用户目录 ACL 决定；POSIX 新建私有�
 node --test zcode-subscription-proxy/tests/*.test.mjs
 ```
 
-`0.2.5` 在 Windows 使用 CLIProxyAPI `v8.0.47` 完成 253 项测试中的 238 项，15 项按平台条件跳过，0 失败，包含实际 ZCode 内置运行时与原生核心。真实账号生图及聊天模型的工具选择行为未作端到端验证。
+`0.2.6` 在 Windows 使用 CLIProxyAPI `v8.0.47` 完成全量回归及失败用例修正后的定向复测，合并有效结果为 274 项中 259 项通过、15 项按平台条件跳过，包含实际 ZCode 内置运行时、原生核心、Gemini 原生请求与图片解析的模拟 HTTP 测试及 GPT 回归。缓存失效测试显式推进文件修改时间，避免 Windows 快速等长写入的时间戳碰撞；修改后核心缓存测试已复测通过。真实账号生图及聊天模型的工具选择行为未作端到端验证。
 
 普通 `node --test` **不会自动联网下载核心**。通用配置、协议、固定平台来源/哈希、打包白名单及托管器模拟测试离线运行。原生核心测试必须显式设置 `BRIDGE_TEST_BIN` 为预先准备且匹配当前平台固定 SHA256 的核心绝对路径；未设置时输出明确 skip。各原生 fixture 校验后复制到自身临时目录和随机端口，绝不直接运行或修改源测试核心，不读取正式授权，不进行付费生成或真实 OAuth。
 
