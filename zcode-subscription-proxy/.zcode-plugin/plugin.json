@@ -1,7 +1,8 @@
 {
   "name": "zcode-subscription-proxy",
-  "version": "0.2.7",
+  "version": "0.2.9",
   "description": "zcode订阅代理：本机订阅授权、模型 API 与图片生成，随 MCP 生命周期托管。",
   "author": { "name": "crx-96" },
+  "commands": "./commands",
   "mcpServers": "./.mcp.json"
 }

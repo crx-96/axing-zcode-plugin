@@ -1,12 +1,12 @@
-# zcode订阅代理 · 0.2.7
+# zcode订阅代理 · 0.2.9
 
 基于 **[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** 的 ZCode 第三方插件，将本人合法授权的订阅接入本机 OpenAI 兼容 API，并提供状态、启停和图片生成 MCP 工具。它不是 ZCode、CLIProxyAPI、OpenAI 或 Google 官方产品，也不赠送订阅、额度或账号权限。
 
-> 使用前阅读 [免责声明](DISCLAIMER.md) 和 [第三方软件与许可证](THIRD_PARTY_NOTICES.md)。管理密码固定为 **`123456`**，只能用于可信个人电脑上的回环服务，不能暴露到局域网或公网。
+> 管理密码和模型 API Key 都保存在本机用户数据目录。请保护该目录，并让代理仅在本机回环地址提供服务。[免责声明](DISCLAIMER.md) · [第三方软件与许可证](THIRD_PARTY_NOTICES.md)
 
 ## 支持平台和版本
 
-| 项目 | 0.2.7 的范围 |
+| 项目 | 0.2.9 的范围 |
 | --- | --- |
 | Windows | Windows 10 **22H2 x64** / Windows 11 **x64**；保留 PowerShell 5.1、.NET Framework 和 Job Object 托管。Windows 10 是兼容目标，尚未单独验收 |
 | macOS | Intel x64 / Apple Silicon ARM64；使用 POSIX 本地市场、系统 `/bin/sh`、ZCode 内置运行时或已有 Node 22+。具体最低系统版本取决于 ZCode 与上游核心，尚未实机确定 |
@@ -15,7 +15,7 @@
 | ZCode | 按 ZCode Desktop `3.16.2.8769` 的第三方插件接口检查；没有跨平台 MCP 命令条件字段，故分别提供 Windows 与 POSIX 清单 |
 | 已确认内置运行时 | Windows ZCode `3.16.2.8769` 内置 Node `24.14.0` / Electron `41.0.3`；POSIX 启动器会探测候选运行时，不静默安装 Node |
 | 开发环境 | Node.js 22+；本机回归使用 Node `26.4.0`，CI 配置为 Node 22 |
-| 代理核心 | 固定 CLIProxyAPI `v8.0.47`；包内只保留五平台清单、文档与许可证，宿主启动 MCP 进程时自动准备当前系统/架构核心，校验归档与二进制 SHA256 后缓存 |
+| 代理核心 | 固定 CLIProxyAPI `v8.0.51`；包内只保留五平台清单、文档与许可证，宿主启动 MCP 进程时自动准备当前系统/架构核心，校验归档与二进制 SHA256 后缓存 |
 | 首次核心下载依赖 | 系统可用的 `curl`（HTTPS）；归档校验与安全解压由插件的 Node 实现完成，不另装解压工具。核心后台准备独立预算 10 分钟（600 秒），不阻塞 MCP 握手，无自动重试；离线可用 `BRIDGE_BIN` 覆盖 |
 | 不支持 | Windows 32 位、原生 Windows ARM64、其他操作系统和架构；ARM64 x64 仿真未验证 |
 
@@ -23,7 +23,7 @@
 
 ## 安装
 
-**Windows**：按 [仓库市场安装说明](../README.md#添加市场与安装) 添加整个仓库，再安装 **zcode订阅代理 0.2.7**。
+**Windows**：按 [仓库市场安装说明](../README.md#添加市场与安装) 添加整个仓库，再安装 **zcode订阅代理 0.2.9**。
 
 **macOS / Linux**：当前宿主不能在同一 MCP 清单内按平台选择命令，默认清单仍为 Windows 入口。先下载完整仓库，在仓库根目录执行：
 
@@ -31,7 +31,7 @@
 sh zcode-subscription-proxy/scripts/prepare-posix-marketplace.sh "$HOME/zcode-subscription-marketplace"
 ```
 
-将输出的新目录（不是插件子目录）添加到插件市场，再安装 `0.2.7`。脚本不需要 Node/npm，不修改原始源码、安装缓存或用户设置；只创建新的本地分发副本，已存在的目标不会覆盖。更新时从新源码生成新目标，再在市场源管理中使用该副本；同名市场不应同时绑定不同来源。默认 GitHub 市场入口目前只适用于 Windows。
+将输出的新目录（不是插件子目录）添加到插件市场，再安装 `0.2.9`。脚本不需要 Node/npm，不修改原始源码、安装缓存或用户设置；只创建新的本地分发副本，已存在的目标不会覆盖。更新时从新源码生成新目标，再在市场源管理中使用该副本；同名市场不应同时绑定不同来源。默认 GitHub 市场入口目前只适用于 Windows。
 
 POSIX 启动器优先从当前 ZCode 祖先进程发现可用内置运行时，随后尝试已有 Node 和常见 ZCode 安装位置；每个候选均验证 Node 22+ 后再运行 MCP。缺失时明确报错，不安装全局工具。管理网页授权、API 和图片保存不依赖 PowerShell；`.cmd` 授权助手仅为 Windows 的可选备用方式。
 
@@ -41,11 +41,13 @@ POSIX 启动器优先从当前 ZCode 祖先进程发现可用内置运行时，�
 
 ## 首次使用：打开管理网页并授权
 
-1. 在宿主 MCP 设置中连接插件。MCP 读取本地配置后即完成握手，当前平台核心在后台准备并自动启动本地代理，**无需先向 AI 发消息或调用 `bridge_start`**。MCP 显示已连接时核心可能仍在下载；等待代理就绪后浏览器访问 **<http://127.0.0.1:18787/management.html>**，没有账号或聊天模型也可进入管理页。
-2. 管理页面如要求服务地址，填 `http://127.0.0.1:18787`；管理密码填 **`123456`**。这不是模型 API Key。
+1. 在宿主 MCP 设置中连接插件。MCP 读取本地配置后即完成握手，当前平台核心在后台准备并自动启动本地代理，**无需先向 AI 发消息或调用 `bridge_start`**。MCP 显示已连接时核心可能仍在下载；核心就绪后即可管理账号。
+2. 代理就绪后，在任务输入框输入 `/`，搜索 `open-management`，选择说明为「授权与账号管理」的插件指令并发送。宿主可能显示插件名前缀。默认浏览器会打开临时回环地址，使用一次性票据进入已登录的账号授权页。票据在 1 分钟后失效，浏览器会话最长 30 分钟。会话过期或插件重连后，重新执行指令即可。
 3. 在管理页面的 **OAuth / 账号授权** 区域选择服务商。授权页面由 CLIProxyAPI 提供，菜单文字可能随上游页面更新变化。
 4. 在服务商自己的页面登录本人账号并明确同意授权。完成后回到管理页检查账号和授权状态，再按下节配置聊天模型。
 5. 已有可用聊天模型后，可选发送：**“检查 zcode订阅代理的 bridge_status，只检查状态，不生成图片。”** 应返回 `ready: true`、管理地址和模型列表。`ready` 只表示本机代理与模型列表接口可用，不保证账号具有付费模型权限；没有账号时模型列表可为空，这不阻止初始化成功。
+
+**手动登录**　首次配置聊天模型或宿主暂时不能执行指令时，也可在确保代理已就绪后打开 <http://127.0.0.1:18787/management.html>，输入本机数据目录 `launcher-secrets.json` 中的 `mgmtKey`。更改过 `BRIDGE_PORT` 或 `BRIDGE_DATA_DIR` 时使用对应端口或目录。只向已确认属于本插件的本机管理页输入凭据。
 
 **主动暂停**：`bridge_stop` 持久暂停代理，并取消本会话的在途核心下载/启动。重连后仍可完成 MCP 握手和查询状态，但不会自动下载或启动；显式 `bridge_start` 才解除暂停。缺失或不可执行的自定义 `BRIDGE_BIN` 会在尝试启动时报告工具或后台故障，不会阻止管理 MCP 连接。
 
@@ -53,7 +55,7 @@ POSIX 启动器优先从当前 ZCode 祖先进程发现可用内置运行时，�
 
 后台核心准备使用独立的 **10 分钟（600 秒）**预算，覆盖等待下载锁、下载、校验和解压；curl 建立连接最多等待 **60 秒**，单次传输最多 **9 分钟（540 秒）**，为校验和解压预留余量，所有阶段仍受剩余总预算约束。代理启动沿用生命周期模块的有界超时。已移除覆盖网络下载的 50 秒初始化预算，无需依赖提高宿主握手超时。EOF、断管或进程退出信号会取消在途准备，待本次临时文件和子进程清理完成后退出。`ZCODE_HTTP_PROXY` 优先于常见代理环境变量（HTTPS 下载使用 `https_proxy`/`HTTPS_PROXY`，并保留 curl 的 `ALL_PROXY`/`all_proxy`、`NO_PROXY`/`no_proxy` 规则；仅设置 `HTTP_PROXY` 不保证用于 HTTPS）；不要把含密码的代理地址发到聊天或日志。
 
-默认 `dataDir` 为 `~/.zcode/zcode-subscription-proxy/data`（Windows 对应 `%USERPROFILE%\.zcode\zcode-subscription-proxy\data`）。缓存路径为 `dataDir/runtimes/v8.0.47/<platform-arch>/<basename(platforms.json.path)>`，例如 Linux x64 的 `runtimes/v8.0.47/linux-x64/zcode-plugin-subscription-proxy`，Windows x64 的 `runtimes/v8.0.47/win32-x64/zcode-plugin-subscription-proxy.exe`。升级插件沿用同一版本核心缓存，不复制其他平台文件。离线使用时，设置 `BRIDGE_BIN` 指向自行准备的可信当前平台 CLIProxyAPI v8 可执行文件；该覆盖不触发下载，也不自动替换文件或修改其权限。
+默认 `dataDir` 为 `~/.zcode/zcode-subscription-proxy/data`（Windows 对应 `%USERPROFILE%\.zcode\zcode-subscription-proxy\data`）。缓存路径为 `dataDir/runtimes/v8.0.51/<platform-arch>/<basename(platforms.json.path)>`，例如 Linux x64 的 `runtimes/v8.0.51/linux-x64/zcode-plugin-subscription-proxy`，Windows x64 的 `runtimes/v8.0.51/win32-x64/zcode-plugin-subscription-proxy.exe`。升级插件沿用同一版本核心缓存，不复制其他平台文件。离线使用时，设置 `BRIDGE_BIN` 指向自行准备的可信当前平台 CLIProxyAPI v8 可执行文件；该覆盖不触发下载，也不自动替换文件或修改其权限。
 
 管理页随插件固定提供（上游管理中心 `v1.26.7`），启动前校验原资产 SHA256 并生成带 Antigravity 兼容补丁的独立副本。首次打开无需下载页面；Google 授权及模型请求仍需要正常网络。为避免补丁被覆盖，启动时将 `management.disable-auto-update-panel` 设为 `true`，其他配置和原 `static/management.html` 不变。管理页后续更新随插件维护，不再自动追踪上游页面发布。
 
@@ -62,17 +64,43 @@ POSIX 启动器优先从当前 ZCode 祖先进程发现可用内置运行时，�
 在 ZCode 的模型/供应商设置中添加兼容 OpenAI 的供应商：
 
 - **Base URL**：`http://127.0.0.1:18787/v1`
-- **API Key**：在本机数据目录的 `launcher-secrets.json` 中查看 `apiKey`，复制到供应商设置。Windows 为 `%USERPROFILE%\.zcode\zcode-subscription-proxy\data`，macOS/Linux 为 `~/.zcode/zcode-subscription-proxy/data`。不要发给 AI、截图公开或提交到仓库。
+- **API Key**：在本机数据目录的 `launcher-secrets.json` 中查看 `apiKey`，复制到供应商设置。显式设置过 `BRIDGE_API_KEY` 时使用环境变量中的值。Windows 为 `%USERPROFILE%\.zcode\zcode-subscription-proxy\data`，macOS/Linux 为 `~/.zcode/zcode-subscription-proxy/data`。不要发给 AI、截图公开或提交到仓库。
 - **协议**：按目标模型选择 Chat Completions 或 Responses。
 - **模型**：使用管理页面或 `bridge_status` 实际列出的聊天模型。不要把 `gpt-image-*` 设置成聊天主模型。
 
-API Key 首次随机生成并持久保留，**不是 `123456`**。插件升级不会自动轮换 API Key 或清空授权。首次接入不要求先配置其他聊天模型：由宿主启动/重连插件 MCP，自动准备成功后即可打开管理页授权，再配置本地供应商。若宿主尚未启动 MCP 进程，插件无法自行触发宿主连接；不要把打开空白窗口等同于代理已经就绪。
+模型 API Key 首次随机生成并持久保留。插件升级不会自动轮换 API Key 或清空授权。首次接入不要求先配置其他聊天模型：由宿主启动/重连插件 MCP，自动准备成功后即可打开管理页授权，再配置本地供应商。若宿主尚未启动 MCP 进程，插件无法自行触发宿主连接；不要把打开空白窗口等同于代理已经就绪。
 
 ### 自主模式与审批模型
 
 根据 **2026-10-25 本机 ZCode 静态实现核对**，Autonomous mode 对应 `guarded`：对识别出的危险命令请求一次人工确认，不发起独立模型审批请求；`auto` 模式仍保留为未实现分支。这不是 Qoder 的 AI 审批机制。
 
 本插件不接管宿主权限决定，也不把普通 GPT 聊天重定向到 `codex-auto-review`。模型目录中出现该模型，不意味着自主模式会使用它。以上边界仅针对本次核对的宿主实现；后续宿主若提供独立审批请求或接口，需重新核对后再评估接入。
+
+## GPT 流式请求
+
+从 `0.2.8` 起，插件在启动代理时补齐以下 v8 配置。Codex 会暂存启动事件，收到推理、正文或工具事件就释放缓冲。`10s` 上限在收到上游帧时检查。开始转发后，核心每 15 秒可向客户端发送 SSE 心跳。上游在输出中途断开时，客户端仍会收到错误，已发送的内容不会由插件重放。
+
+```yaml
+routing:
+  retry:
+    request-retry: 1
+    max-retry-interval: 5
+  cooldown:
+    transient-error-cooldown-seconds: 3
+requests:
+  streaming:
+    keepalive-seconds: 15
+    bootstrap-retries: 1
+    send-keepalive-before-ft: false
+upstream:
+  codex:
+    stream-bootstrap-buffering: true
+    stream-bootstrap-timeout: "10s"
+```
+
+路由允许额外一轮，首字节前的流处理器允许一次重试。单账号遇到可重试的临时 503 时，3 秒冷却落在 5 秒的轮间等待预算内。路由和 SSE 设置适用于继承全局配置的请求，启动缓冲只作用于 Codex。只收到启动事件就结束的 SSE 请求仍可能返回 HTTP 408，宿主可据此决定是否重试。[上游配置说明](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.51/config.example.yaml) · [Codex 启动帧与过载问题 #6856](https://github.com/router-for-me/CLIProxyAPI/issues/6856)
+
+从 `0.2.9` 起仅补齐缺失字段，保留显式 `request-retry: 0` 及核心仍支持的旧字段值。更新前请等当前请求结束并调用 `bridge_stop`，安装新版、重连 MCP，再调用 `bridge_start`。首次启动新版会为旧安装设置独立管理密码，同时保留模型 API Key 和已有账号授权。
 
 ## Antigravity 授权失败的处理
 
@@ -99,14 +127,14 @@ listen ...:51121: bind: An attempt was made to access a socket in a way forbidde
 
 这解决了生成授权链接时的回调服务启动失败，但不是全自动回跳；账号授权仍需手动复制一次 URL。Google 网络、地区和账号权限错误不会被该补丁绕过。
 
-**已有 0.0.1 / 0.1.0 / 0.1.1 / 0.2.0 / 0.2.1 / 0.2.2 / 0.2.3 / 0.2.4 / 0.2.5 / 0.2.6 安装的更新方式**：先在没有进行中请求时调用 `bridge_stop`，刷新指向新源码的市场，再进入插件详情点击 **更新**，确认版本 `0.2.7`。关闭旧任务或断开旧 MCP，更新后新建任务并调用 `bridge_start` 解除暂停。不要删除数据目录，已有 API Key 与授权会保留。没有发布到 GitHub 的源码变更，应使用本地目录市场，不会自动出现在 GitHub 市场。
+**已有 0.0.1 / 0.1.0 / 0.1.1 / 0.2.0 / 0.2.1 / 0.2.2 / 0.2.3 / 0.2.4 / 0.2.5 / 0.2.6 / 0.2.7 / 0.2.8 安装的更新方式**：先在没有进行中请求时调用 `bridge_stop`，刷新指向新源码的市场，再进入插件详情点击 **更新**，确认版本 `0.2.9`。关闭旧任务或断开旧 MCP，更新后新建任务并调用 `bridge_start` 解除暂停。不要删除数据目录，已有 API Key 与授权会保留。没有发布到 GitHub 的源码变更，应使用本地目录市场，不会自动出现在 GitHub 市场。
 
 ### 不改系统端口的命令行授权助手（备用）
 
 本插件附带 [Antigravity授权.cmd](Antigravity授权.cmd)，使用上游已有的手动回填接口，**不监听 51121**。
 
 1. 保持 ZCode 任务与本插件 MCP 运行，确认 `bridge_status` 为就绪。
-2. 在本地插件目录双击 `Antigravity授权.cmd`。可以使用下载的本仓库中的该文件；无须修改安装缓存，也不需要 Node。
+2. 在本地插件目录双击 `Antigravity授权.cmd`。可以使用下载的本仓库中的该文件；无须修改安装缓存，使用与插件兼容的 Node 运行时执行受控请求。
 3. 助手打开 Google 授权页面，由你本人登录并确认。
 4. 浏览器最后跳到 `http://localhost:51121/oauth-callback?...`。由于此方案刻意没有监听该端口，浏览器显示“无法访问”是预期情况。
 5. **复制浏览器地址栏的完整地址，粘贴到本机助手窗口并回车**。助手以隐藏输入读取，不要把该地址发到聊天、issue 或日志；它包含短期授权码。
@@ -114,13 +142,13 @@ listen ...:51121: bind: An attempt was made to access a socket in a way forbidde
 
 请在发起流程后的 **5 分钟内**完成。过期、取消或失败后先检查错误原因，重新发起是一个新的授权流程，不复用旧 URL。若出站网络不可达，仍需修复正常网络或管理配置中的 `requests.proxy-url`；本助手解决的是本地回调端口冲突，不保证 Google token 交换、地区或账号权限一定成功。
 
-默认端口是 `18787`。高级用户修改了端口时，在本插件目录执行：
+Windows 备用助手先检查 Windows App Paths 注册位置和默认安装目录中的 ZCode 内置 Node 模式，再尝试 PATH 中的 Node.js 22+。双击时请使用代理运行时相同的 BRIDGE_DATA_DIR、BRIDGE_BIN 及 BRIDGE_API_KEY 覆盖值（如已配置）。默认端口是 `18787`。高级用户修改了端口时，在本插件目录执行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\antigravity-login.ps1 -Port 你的端口
 ```
 
-助手固定使用回环地址和管理密码 `123456`，不会读取旧插件的随机管理密钥。无需删除 Windows 端口保留范围、禁用 Hyper-V/WSL、关闭防火墙或以管理员身份登录。
+助手从本插件数据目录取得管理凭据，核对实际回环连接归属后提交授权回调。无需删除 Windows 端口保留范围、禁用 Hyper-V/WSL、关闭防火墙或以管理员身份登录。
 
 ## 自动启动与退出清理
 
@@ -140,10 +168,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\antigravity-lo
 
 在无法使用现有插件契约的情况下，本版不修改 ZCode 安装目录或系统设置来伪造桌面级启动支持。
 
+插件在发送模型密钥、管理密码或授权回调前，核对当前已建立的回环连接是否由受托管的核心接收。Windows 依赖系统 `netstat.exe`，macOS 依赖 `/usr/sbin/lsof`，Linux 需要可以读取本用户核心对应的 `/proc/net/tcp` 和 `/proc/<pid>/fd`。若工具提示无法确认归属，先检查端口占用和进程权限，再重试。
+
 ## MCP 工具与图片
 
 | 工具 | 用途 |
 | --- | --- |
+| `bridge_open_management` | 在本机浏览器打开授权与账号管理页，自动登录；工具仅向会话报告操作状态 |
 | `bridge_status` | 查看本机就绪状态、核心后台准备状态及失败原因、管理网页、凭据数量与模型；不返回账号 token 和 API Key；`models.imageModels` 含 GPT 与 Gemini 图片模型，生图前无需调用 |
 | `bridge_start` | 解除暂停；必要时下载并校验当前平台核心，然后启动或复用本插件代理 |
 | `bridge_stop` | 停止可确认归属的代理，取消本会话在途准备，并持久暂停自动恢复 |
@@ -163,8 +194,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\antigravity-lo
 
 默认数据目录：Windows 为 `%USERPROFILE%\.zcode\zcode-subscription-proxy\data`；macOS/Linux 为 `~/.zcode/zcode-subscription-proxy/data`。不在安装缓存内，不带插件版本号，升级保留账号，不自动跨机器迁移凭据。
 
-- `runtimes/v8.0.47/<platform-arch>/<basename(platforms.json.path)>`：经 SHA256 校验的当前平台核心缓存，不含授权数据，不放进插件分发包。
-- `launcher-secrets.json`：随机模型 API Key。
+- `runtimes/v8.0.51/<platform-arch>/<basename(platforms.json.path)>`：经 SHA256 校验的当前平台核心缓存，不含授权数据，不放进插件分发包。
+- `launcher-secrets.json` 保存随机模型 API Key（`apiKey`）与本安装的管理密码（`mgmtKey`）。
 - `config.yaml`：CLIProxyAPI v8 运行配置；管理密码可能被上游改写成哈希。
 - `auths/`：授权凭据，包括敏感 token；禁止共享。
 - `bridge.log`：诊断日志，可能包含上游账号/请求信息，提交问题前必须自行脱敏。
@@ -172,7 +203,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\antigravity-lo
 - `management-panel/<SHA256>/management.html`：启动时生成的受控管理页；原 `static/` 保持不变。页面资产不包含账号凭据。
 - `generated/`：原始图片。卸载插件不会自动删除授权、密钥、日志或图片。
 
-管理密码 `123456` 是公开固定值，**不构成对本机其他用户或恶意软件的安全隔离**。仅允许服务监听 `127.0.0.1`，并强制 `management.allow-remote: false`；不要使用端口转发、反向代理、共享隧道或容器映射公开该端口。其他服务商网页 OAuth 的临时回调监听仍由上游实现，可能绑定 `0.0.0.0`；本修订的 Antigravity 网页和命令行助手均不创建回调监听。
+管理凭据随数据目录独立生成并持久保存。「授权与账号管理」指令为本机浏览器创建短时一次性登录票据。受控管理入口按同源请求转发，核心原生管理接口的跨域行为由 CLIProxyAPI 决定。保持 `management.allow-remote: false`，仅在可信本机使用。不要通过代理或隧道公开管理服务。其他服务商的临时 OAuth 回调监听由上游实现，可能绑定 `0.0.0.0`。
 
 Windows 文件实际访问权限由用户目录 ACL 决定；POSIX 新建私有目录使用 `0700`，密钥、运行配置、控制记录与图片使用 `0600`，既有自定义目录仍须由用户保证私密性。不要把数据目录放在共享盘或代码仓库。撤销访问请在服务商账号安全页面撤销授权，再按需要从管理页删除本地凭据；仅卸载插件不等于服务商撤销授权。
 
@@ -183,8 +214,8 @@ Windows 文件实际访问权限由用户目录 ACL 决定；POSIX 新建私有�
 | `BRIDGE_DATA_DIR` | 自定义独立数据目录，不会自动迁移旧数据 |
 | `BRIDGE_PORT` | `1–65535` 十进制端口，默认 `18787`；变更后需同步既有 YAML 与客户端地址 |
 | `BRIDGE_HOST` | 只允许 `127.0.0.1` |
-| `BRIDGE_API_KEY` | 覆盖运行时 API Key，必须与已有 YAML 一致；不能等于公共管理密码 |
-| `BRIDGE_MGMT_KEY` | 不设置或精确为 `123456`，其他值拒绝，避免文档与实际密码不一致 |
+| `BRIDGE_API_KEY` | 覆盖模型客户端密钥，须满足 HTTP 请求头要求并与已有配置一致，与管理密码分开 |
+| `BRIDGE_MGMT_KEY` | 通常留空。旧配置中的 `123456` 仅作兼容占位，实际密码见本地 `mgmtKey`；其他覆盖值会被拒绝 |
 | `BRIDGE_BIN` | 离线/高级覆盖：兼容当前系统和架构的可信 CLIProxyAPI v8 可执行文件路径；不下载或自动替换该程序，自定义 POSIX 程序需已具有执行权限；不会绕过平台支持范围 |
 | `ZCODE_HTTP_PROXY` | 首次核心 HTTPS 下载的优先代理；未设置时使用 curl 支持的常见代理环境变量 |
 
@@ -194,8 +225,8 @@ Windows 文件实际访问权限由用户目录 ACL 决定；POSIX 新建私有�
 
 - **打不开管理页**：先在宿主 MCP 设置中确认插件已连接；MCP 初始化成功时核心可能仍在后台下载，需等待代理就绪。已有可用模型时可调用 `bridge_status` 查看下载状态及失败原因；准备失败可检查原因后重连重试，无需先有模型。曾主动 `bridge_stop` 的需显式 `bridge_start` 解除暂停。若仍看到旧授权提示，确认已重装此修订、停止旧进程并强制刷新网页。
 - **端口冲突**：插件不会抢端口或杀别的代理。停止你确认不再需要的程序，或使用同步配置的独立端口。
-- **网页提示密码错误**：确认访问的是 `18787` 新插件而非旧 `8787`；固定密码是 `123456`。不要在管理页把密码改成其他值。
-- **模型 API 401**：API Key 不是管理密码，检查本地 `launcher-secrets.json` 中的 `apiKey` 与供应商设置。
+- **管理页登录失败**　重新执行「授权与账号管理」。手动登录时核对管理页端口和当前数据目录里的 `mgmtKey`。若升级后仍运行旧核心，请先停止旧实例，再启动新版。
+- **模型 API 401**　核对供应商设置与 `BRIDGE_API_KEY`，未设置覆盖值时核对 `launcher-secrets.json` 中的 `apiKey`。
 - **上游 403/429/5xx**：分别可能涉及账号权限、配额/速率或网络/服务异常。先查看管理页，不把它当作本地进程异常反复重启。
 - **MCP 已断连**：在 ZCode 的 MCP 设置中重连或新建任务；插件不能自行重建宿主管道。
 - **macOS/Linux 报找不到 PowerShell**：安装的是默认 Windows 清单；按安装章节生成 POSIX 本地市场并使用该来源，不要编辑安装缓存。
@@ -211,7 +242,11 @@ Windows 文件实际访问权限由用户目录 ACL 决定；POSIX 新建私有�
 node --test zcode-subscription-proxy/tests/*.test.mjs
 ```
 
-`0.2.7` 在 Windows 使用 CLIProxyAPI `v8.0.47` 完成全量回归，结果为 277 项中 262 项通过、15 项按平台条件跳过，包含实际 ZCode 内置运行时（Electron `41.0.3` Node mode）、原生核心的 Job 回收、Gemini 原生请求与图片解析的模拟 HTTP 测试、GPT 回归、图片模型清单与请求路由的一致性及生图指引免预查询断言。缓存失效测试显式推进文件修改时间，避免 Windows 快速等长写入的时间戳碰撞。真实账号生图、出图耗时及聊天模型的工具选择行为未作端到端验证。
+同时设置 `BRIDGE_TEST_BROWSER` 为受信任的 Chrome 或 Edge 程序绝对路径、`BRIDGE_TEST_BIN` 为经校验的测试核心，即可运行 `tests/management-browser.test.mjs`。该测试启动独立的无头浏览器配置与本机代理，验证票据兑换后实际显示账号授权页，并在刷新后仍能使用。临时数据在结束后清理。
+
+`0.2.9` 在 Windows x64 运行完整回归，共 303 项，288 项通过，15 项受平台条件限制而跳过。测试使用真实 ZCode 内置运行时和固定的 CLIProxyAPI `v8.0.51`。Chrome 完成了免密管理页及刷新测试，另用 Edge 的隔离配置验证了一次性票据兑换和真实授权页面挂载。浏览器测试未登录真实服务商账号；macOS/Linux 原生生命周期及桌面安装仍需在对应平台验证。
+
+历史版本 `0.2.8` 在 Windows 使用 CLIProxyAPI `v8.0.51` 运行全量回归，共 285 项，270 项通过，15 项按平台条件跳过。已验证宿主内置 Node 运行时、单账号 503 恢复、输出前和输出后断流、配置迁移及幂等性。流式用例使用本地模拟上游。真实账号的断流频率和 macOS/Linux 实机运行效果仍需在对应环境观察。
 
 普通 `node --test` **不会自动联网下载核心**。通用配置、协议、固定平台来源/哈希、打包白名单及托管器模拟测试离线运行。原生核心测试必须显式设置 `BRIDGE_TEST_BIN` 为预先准备且匹配当前平台固定 SHA256 的核心绝对路径；未设置时输出明确 skip。各原生 fixture 校验后复制到自身临时目录和随机端口，绝不直接运行或修改源测试核心，不读取正式授权，不进行付费生成或真实 OAuth。
 
